@@ -25,6 +25,11 @@ class Settings(BaseSettings):
 
     # MCP
     mcp_gateway_url: str = "http://localhost:9000"
+    # Each MCP server serves the streamable-HTTP endpoint at /mcp on its own port.
+    transport_mcp_url: str = "http://localhost:9101/mcp"
+    hotels_mcp_url: str = "http://localhost:9102/mcp"
+    places_mcp_url: str = "http://localhost:9103/mcp"
+    weather_mcp_url: str = "http://localhost:9104/mcp"
     mcp_gateway_api_key: str = "dev-gateway-key"
     tool_rate_limit_per_minute: int = 60
 

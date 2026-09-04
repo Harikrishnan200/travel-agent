@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 3 of 17.** Four agents with restricted tool access, running on mock providers.
+> **Status: Phase 4 of 17.** Four custom MCP servers exposing the seven read tools.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,21 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## MCP servers
+
+Four custom MCP servers built with FastMCP, each serving streamable HTTP at `/mcp`:
+
+| Server | Port | Tools |
+|---|---|---|
+| `mcp_servers/transport` | 9101 | `search_flights`, `search_trains`, `search_buses` |
+| `mcp_servers/hotels` | 9102 | `search_hotels` |
+| `mcp_servers/places` | 9103 | `search_places`, `calculate_route` |
+| `mcp_servers/weather` | 9104 | `get_weather` |
+
+Run one standalone with `python -m mcp_servers.transport.server`. Routes live in
+the places server because both tools answer geography questions from the same
+city table - a maps server of its own would be a folder for appearance.
 
 ## Agents and tool access
 
