@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI
 
+from app.api import trips
 from app.config import get_settings
 
 settings = get_settings()
@@ -11,6 +12,8 @@ app = FastAPI(
     description="Multi-agent travel planner built on LangGraph and MCP.",
     version="0.1.0",
 )
+
+app.include_router(trips.router)
 
 
 @app.get("/health")
