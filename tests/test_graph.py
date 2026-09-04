@@ -65,6 +65,26 @@ def test_transport_cost_is_per_person_return():
     assert costs["total_cost"] == 20000 + 2000 + 300 + 150
 
 
+def test_provider_totals_take_precedence_over_per_unit_prices():
+    """When a provider gives a total for the party, we trust it over our own maths."""
+    state = {
+        "travelers": 2,
+        "duration_days": 3,
+        "selected_transport": {"price_per_person": 5000, "total_price": 9000},
+        "selected_hotel": {"price_per_night": 1000, "total_price": 4400},
+        "itinerary": {"days": []},
+    }
+    costs = nodes.compute_costs(state)
+    assert costs["cost_breakdown"]["transport"] == 18000  # 9000 each way
+    assert costs["cost_breakdown"]["hotel"] == 4400
+
+
+def test_every_day_of_the_itinerary_gets_a_plan(graph):
+    for day in run(graph)["itinerary"]["days"]:
+        assert day["morning"] and day["afternoon"] and day["evening"]
+        assert day["local_transport_cost"] > 0
+
+
 # --- routing ---------------------------------------------------------------
 
 
@@ -95,26 +115,51 @@ def test_human_review_routes_on_feedback_then_approval():
 # --- re-planning and exhaustion -------------------------------------------
 
 
-def test_tight_budget_triggers_replan_to_a_cheaper_hotel(graph):
-    out = run(graph, trip_id="tight", budget=40000.0)
-    assert out["replan_attempts"] >= 1
-    assert out["selected_hotel"]["price_per_night"] == 1800  # downgraded
+def test_a_tighter_budget_produces_a_cheaper_plan(graph):
+    """The manager allocates the hotel budget up front, so most trips never need a re-plan."""
+    roomy = run(graph, trip_id="roomy", budget=50000.0)
+    tight = run(graph, trip_id="tight", budget=35000.0)
+
+    assert tight["selected_hotel"]["total_price"] < roomy["selected_hotel"]["total_price"]
+    assert tight["total_cost"] < roomy["total_cost"]
+    assert tight["status"] == "awaiting_approval"
 
 
 def test_impossible_budget_ends_in_needs_user_decision(graph):
+    """Return airfare alone exceeds this budget, so no re-plan can rescue it."""
     out = run(graph, trip_id="impossible", budget=1000.0)
     assert out["status"] == "needs_user_decision"
     assert out["replan_attempts"] == 3
     assert "budget" in out["final_response"].lower()
 
 
+def test_plans_that_fit_are_never_re_planned(graph):
+    out = run(graph, trip_id="fits", budget=50000.0)
+    assert out["replan_attempts"] == 0
+    assert out["total_cost"] <= out["budget"]
+
+
 def test_replan_does_not_upgrade_the_hotel():
     state = {
         "replan_attempts": 0,
-        "selected_hotel": {"name": "Budget Inn", "price_per_night": 1800},
-        "hotel_options": [{"name": "Luxury", "price_per_night": 9000}],
+        "selected_hotel": {"name": "Budget Inn", "total_price": 1800},
+        "hotel_options": [{"name": "Luxury", "total_price": 9000}],
     }
     assert "selected_hotel" not in nodes.replan(state)
+
+
+def test_replan_removes_the_chosen_hotel_from_the_pool():
+    state = {
+        "replan_attempts": 0,
+        "selected_hotel": {"name": "Expensive", "total_price": 9000},
+        "hotel_options": [
+            {"name": "Mid", "total_price": 5000, "rating": 4.0},
+            {"name": "Cheap", "total_price": 2000, "rating": 3.2},
+        ],
+    }
+    updates = nodes.replan(state)
+    assert updates["selected_hotel"]["name"] == "Mid"  # best rated of the cheaper options
+    assert [h["name"] for h in updates["hotel_options"]] == ["Cheap"]
 
 
 # --- output guard ----------------------------------------------------------

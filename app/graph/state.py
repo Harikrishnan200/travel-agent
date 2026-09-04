@@ -29,6 +29,8 @@ class TravelState(TypedDict, total=False):
     places: list
     weather: list
     routes: list
+    suggested_schedule: list  # Experience Agent's weather-aware day split
+    experience_notes: list[str]
 
     # --- agent recommendations ---
     selected_transport: dict

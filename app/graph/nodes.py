@@ -8,10 +8,18 @@ day one, because that is the part worth getting right early.
 
 from datetime import date, timedelta
 
+from app.agents import travel_manager
+from app.agents.accommodation_agent import research_accommodation as accommodation_agent
+from app.agents.experience_agent import research_experience as experience_agent
+from app.agents.transport_agent import research_transport as transport_agent
 from app.config import get_settings
 from app.graph.state import TravelState
+from app.tools import get_tools
 
 settings = get_settings()
+
+# Rough local travel allowance per person per day (autos, metro, taxis).
+LOCAL_TRANSPORT_PER_DAY = 250
 
 
 # --------------------------------------------------------------------------
@@ -66,67 +74,53 @@ def validate_request(state: TravelState) -> dict:
 
 
 def research_transport(state: TravelState) -> dict:
-    """Transport Agent: flights vs trains vs buses.
+    """Delegate to the Transport Agent with a scoped brief."""
+    brief = travel_manager.build_transport_brief(state)
+    result = transport_agent(brief, get_tools("transport_agent"))
 
-    Phase 3 replaces this with the real agent, Phase 4/5 with MCP tool calls.
-    """
+    options = state.get("transport_options", {})
     return {
         "transport_options": {
-            "trains": [
-                {
-                    "id": "12626",
-                    "name": "Kerala Express",
-                    "duration_hours": 46,
-                    "price_per_person": 1800,
-                }
-            ],
-            "flights": [
-                {
-                    "id": "6E-455",
-                    "name": "IndiGo",
-                    "duration_hours": 3,
-                    "price_per_person": 6500,
-                }
-            ],
-            "buses": [],
+            **options,
+            "alternatives": [o.model_dump() for o in result.alternatives],
         },
-        "selected_transport": {
-            "mode": "flight",
-            "id": "6E-455",
-            "name": "IndiGo",
-            "duration_hours": 3,
-            "price_per_person": 6500,
-            "reason": "Train journey is 46h, over the traveller's 12h limit.",
-        },
+        "selected_transport": (
+            {**result.recommended.model_dump(), "reason": result.reason}
+            if result.recommended
+            else {}
+        ),
+        "degraded": state.get("degraded", []) + result.failures,
     }
 
 
 def research_accommodation(state: TravelState) -> dict:
-    """Accommodation Agent. Phase 3 replaces this with the real agent."""
+    """Delegate to the Accommodation Agent. Its budget depends on the transport chosen."""
+    brief = travel_manager.build_accommodation_brief(state)
+    result = accommodation_agent(brief, get_tools("accommodation_agent"))
+
     return {
-        "hotel_options": [
-            {"name": "Hotel Sunrise", "rating": 4.2, "price_per_night": 3000},
-            {"name": "Budget Inn", "rating": 3.8, "price_per_night": 1800},
-        ],
-        "selected_hotel": {
-            "name": "Hotel Sunrise",
-            "location": "Connaught Place, Delhi",
-            "rating": 4.2,
-            "price_per_night": 3000,
-        },
+        "hotel_options": [h.model_dump() for h in result.alternatives],
+        "selected_hotel": (
+            {**result.recommended.model_dump(), "reason": result.reason}
+            if result.recommended
+            else {}
+        ),
+        "degraded": state.get("degraded", []) + result.failures,
     }
 
 
 def research_experience(state: TravelState) -> dict:
-    """Experience Agent: places, weather, routes. Phase 3 replaces this."""
+    """Delegate to the Experience Agent: places, weather and a weather-aware day split."""
+    brief = travel_manager.build_experience_brief(state)
+    result = experience_agent(brief, get_tools("experience_agent"))
+
     return {
-        "places": [
-            {"name": "Red Fort", "category": "historical", "entry_fee": 600},
-            {"name": "Humayun's Tomb", "category": "historical", "entry_fee": 600},
-            {"name": "Chandni Chowk food walk", "category": "food", "entry_fee": 0},
-        ],
-        "weather": [{"date": state.get("start_date", ""), "condition": "clear", "rain_chance": 10}],
-        "routes": [],
+        "places": [p.model_dump() for p in result.places],
+        "weather": [w.model_dump() for w in result.weather],
+        "routes": [r.model_dump() for r in result.routes],
+        "suggested_schedule": result.suggested_schedule,
+        "experience_notes": result.notes,
+        "degraded": state.get("degraded", []) + result.failures,
     }
 
 
@@ -136,50 +130,82 @@ def research_experience(state: TravelState) -> dict:
 
 
 def create_itinerary(state: TravelState) -> dict:
-    """Turn research results into a day-by-day schedule.
+    """Turn the Experience Agent's day split into a morning/afternoon/evening schedule.
 
     A node, not an agent: it calls no tools. Phase 8 gives it an LLM for the
-    narrative; the costs below stay in Python permanently.
+    narrative wording. The dates and the costs below stay in Python permanently.
     """
     start = date.fromisoformat(state["start_date"])
+    schedule = state.get("suggested_schedule") or []
+    travelers = state.get("travelers", 1)
+    slots = ("morning", "afternoon", "evening")
+
     days = []
-    for i in range(state["duration_days"]):
-        days.append(
-            {
-                "day": i + 1,
-                "date": (start + timedelta(days=i)).isoformat(),
-                "morning": "Sightseeing",
-                "afternoon": "Local exploration",
-                "evening": "Food walk",
-                "activities": [p["name"] for p in state.get("places", [])[:2]],
-                "activity_cost": 1200,
-                "local_transport_cost": 500,
-                "notes": "",
-            }
-        )
+    for index in range(state["duration_days"]):
+        day_date = (start + timedelta(days=index)).isoformat()
+        planned = next((d for d in schedule if d["date"] == day_date), {})
+        activities = planned.get("activities", [])
+
+        day = {
+            "day": index + 1,
+            "date": day_date,
+            "activities": [a["name"] for a in activities],
+            "activity_cost": sum(a.get("entry_fee", 0) for a in activities) * travelers,
+            "local_transport_cost": LOCAL_TRANSPORT_PER_DAY * travelers,
+            "notes": _weather_note(planned.get("weather"), activities),
+        }
+        for slot, activity in zip(slots, activities, strict=False):
+            day[slot] = activity["name"]
+        for slot in slots:
+            day.setdefault(slot, "Free time")
+
+        # The first and last days are partly spent travelling.
+        if index == 0:
+            day["morning"] = f"Travel from {state['origin']}, arrival and hotel check-in"
+        if index == state["duration_days"] - 1:
+            day["evening"] = f"Check out and return to {state['origin']}"
+
+        days.append(day)
+
     return {"itinerary": {"days": days}}
+
+
+def _weather_note(weather: dict | None, activities: list[dict]) -> str:
+    """A short note explaining the weather, and flagging outdoor plans on a wet day."""
+    if not weather:
+        return ""
+    summary = f"{weather['condition'].title()}, {weather['temperature_c']}C"
+    if weather.get("good_for_outdoor"):
+        return f"{summary}."
+    outdoors = [a["name"] for a in activities if a.get("outdoor")]
+    if outdoors:
+        return (
+            f"{summary} ({weather['rain_probability']}% rain) - {', '.join(outdoors)} is outdoors."
+        )
+    return f"{summary} ({weather['rain_probability']}% rain) - indoor plans."
 
 
 def compute_costs(state: TravelState) -> dict:
     """Financial totals, always in Python. Never delegated to the LLM.
 
-    Not a graph node - called by validate_plan and by the re-planner so both
-    always agree on the arithmetic.
+    Not a graph node - the validator, the re-planner and the output guard all
+    call it, so they can never disagree about the arithmetic.
     """
     travelers = state.get("travelers", 1)
-    nights = max(state.get("duration_days", 1) - 1, 0)
-
-    transport = state.get("selected_transport", {}).get("price_per_person", 0) * travelers * 2
-    hotel = state.get("selected_hotel", {}).get("price_per_night", 0) * nights
+    transport = state.get("selected_transport") or {}
+    hotel = state.get("selected_hotel") or {}
     days = state.get("itinerary", {}).get("days", [])
-    activity = sum(d.get("activity_cost", 0) for d in days)
-    local = sum(d.get("local_transport_cost", 0) for d in days)
+
+    # Providers return a total for the whole party; fall back to per-person maths.
+    one_way = transport.get("total_price") or transport.get("price_per_person", 0) * travelers
+    nights = max(state.get("duration_days", 1) - 1, 0)
+    stay = hotel.get("total_price") or hotel.get("price_per_night", 0) * nights
 
     breakdown = {
-        "transport": float(transport),
-        "hotel": float(hotel),
-        "activity": float(activity),
-        "local_transport": float(local),
+        "transport": float(one_way) * 2,  # return journey
+        "hotel": float(stay),
+        "activity": float(sum(d.get("activity_cost", 0) for d in days)),
+        "local_transport": float(sum(d.get("local_transport_cost", 0) for d in days)),
     }
     return {"cost_breakdown": breakdown, "total_cost": float(sum(breakdown.values()))}
 
@@ -202,17 +228,25 @@ def validate_plan(state: TravelState) -> dict:
 
 
 def replan(state: TravelState) -> dict:
-    """Fix the errors the validator found. Phase 9 implements the real heuristics."""
+    """Fix what the validator complained about.
+
+    Phase 9 adds the transport and activity steps; for now the first and
+    cheapest lever is the hotel.
+    """
     attempts = state.get("replan_attempts", 0) + 1
     updates: dict = {"replan_attempts": attempts}
 
-    # Cheapest available fix: downgrade the hotel.
-    cheaper = sorted(state.get("hotel_options", []), key=lambda h: h.get("price_per_night", 0))
-    current = state.get("selected_hotel", {}).get("price_per_night", 0)
-    for hotel in cheaper:
-        if hotel.get("price_per_night", 0) < current:
-            updates["selected_hotel"] = {**state["selected_hotel"], **hotel}
-            break
+    current = (state.get("selected_hotel") or {}).get("total_price", 0)
+    cheaper = [h for h in state.get("hotel_options", []) if h.get("total_price", 0) < current]
+    if cheaper:
+        # Best-rated among the cheaper options, not simply the cheapest.
+        best = max(cheaper, key=lambda h: (h.get("rating", 0), -h.get("total_price", 0)))
+        updates["selected_hotel"] = {
+            **best,
+            "reason": f"Downgraded to {best['name']} to fit the budget.",
+        }
+        # Drop it from the pool so the next attempt tries something different.
+        updates["hotel_options"] = [h for h in state["hotel_options"] if h["name"] != best["name"]]
 
     return updates
 
@@ -245,18 +279,7 @@ def needs_user_decision(state: TravelState) -> dict:
 
 def finalize(state: TravelState) -> dict:
     """Human approved: assemble the response text."""
-    transport = state.get("selected_transport", {})
-    hotel = state.get("selected_hotel", {})
-    lines = [
-        f"{state['origin']} -> {state['destination']}",
-        f"Travellers: {state['travelers']}  Duration: {state['duration_days']} days",
-        f"Transport: {transport.get('mode')} {transport.get('name')} "
-        f"(Rs {transport.get('price_per_person', 0):,}/person)",
-        f"Hotel: {hotel.get('name')} (Rs {hotel.get('price_per_night', 0):,}/night)",
-        f"Estimated total: Rs {state.get('total_cost', 0):,.0f} "
-        f"of a Rs {state.get('budget', 0):,.0f} budget",
-    ]
-    return {"status": "approved", "final_response": "\n".join(lines)}
+    return {"status": "approved", "final_response": travel_manager.summarize_for_human(state)}
 
 
 def output_guard(state: TravelState) -> dict:
