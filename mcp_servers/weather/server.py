@@ -8,7 +8,7 @@ from mcp.server.fastmcp import FastMCP
 
 from app.config import get_settings
 from mcp_servers.validation import validate_date
-from mcp_servers.weather import mock_data
+from mcp_servers.weather import mock_data, provider
 
 settings = get_settings()
 
@@ -36,8 +36,7 @@ def get_weather(city: str, date: str) -> dict:
 
     if settings.use_mock_data:
         return mock_data.get_weather(city, date)
-    # Phase 6 wires this to Open-Meteo, which is free and needs no key.
-    raise NotImplementedError("Real weather provider arrives in Phase 6.")
+    return provider.get_weather(city, date, timeout=settings.mcp_timeout_seconds)
 
 
 if __name__ == "__main__":

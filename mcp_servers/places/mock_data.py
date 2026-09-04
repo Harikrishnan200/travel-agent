@@ -94,6 +94,7 @@ def search_places(city: str, category: str | None = None, max_results: int = 10)
                 "entry_fee": rng.choice([0, 0, 50, 200, 500, 600]),
                 "visit_duration_hours": duration,
                 "outdoor": outdoor,
+                "source": "mock",
             }
         )
 

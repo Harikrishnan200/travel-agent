@@ -215,6 +215,16 @@ def validate_plan(state: TravelState) -> dict:
     costs = compute_costs(state)
     errors: list[str] = []
 
+    # A plan missing a leg is not a cheap plan, it is an incomplete one. Without
+    # this check an outage produces a plausible-looking itinerary with no way to
+    # get there and a total that quietly omits the cost.
+    if not state.get("selected_transport"):
+        errors.append(
+            f"No transport was found from {state.get('origin')} to " f"{state.get('destination')}."
+        )
+    if not state.get("selected_hotel"):
+        errors.append(f"No accommodation was found in {state.get('destination')}.")
+
     days = state.get("itinerary", {}).get("days", [])
     if len(days) != state.get("duration_days", 0):
         errors.append(f"Itinerary has {len(days)} days, expected {state.get('duration_days')}.")
@@ -266,15 +276,30 @@ def human_review(state: TravelState) -> dict:
 
 
 def needs_user_decision(state: TravelState) -> dict:
-    """Re-planning could not satisfy the constraints - ask the human to relax one."""
-    return {
-        "status": "needs_user_decision",
-        "final_response": (
-            "Your requirements do not fit within the budget. "
-            "Would you like to increase the budget or relax a preference?\n- "
-            + "\n- ".join(state.get("validation_errors", []))
-        ),
-    }
+    """Re-planning could not satisfy the constraints, so hand the decision back.
+
+    The message is built from the errors that actually remain: telling someone to
+    raise their budget when a search provider is down would be misleading.
+    """
+    errors = state.get("validation_errors", [])
+    degraded = state.get("degraded", [])
+
+    if any("No transport" in e or "No accommodation" in e for e in errors):
+        opening = (
+            "I could not put together a complete plan because part of the search "
+            "did not return any options."
+        )
+        ask = "Would you like to try different dates or a different destination?"
+    else:
+        opening = "Your current requirements do not fit within the budget."
+        ask = "Would you like to increase the budget or relax a preference?"
+
+    lines = [opening, "", *(f"- {error}" for error in errors)]
+    if degraded:
+        lines += ["", "Some searches were unavailable: " + "; ".join(sorted(set(degraded)))]
+    lines += ["", ask]
+
+    return {"status": "needs_user_decision", "final_response": "\n".join(lines)}
 
 
 def finalize(state: TravelState) -> dict:

@@ -57,6 +57,7 @@ def search_hotels(
                 "nights": nights,
                 "total_price": price * rooms * nights,
                 "amenities": sorted(rng.sample(AMENITIES, k=rng.randint(3, 6))),
+                "source": "mock",
             }
         )
 

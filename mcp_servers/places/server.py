@@ -10,7 +10,7 @@ Run standalone:
 from mcp.server.fastmcp import FastMCP
 
 from app.config import get_settings
-from mcp_servers.places import mock_data
+from mcp_servers.places import mock_data, provider
 from mcp_servers.validation import validate_count
 
 settings = get_settings()
@@ -56,7 +56,7 @@ def calculate_route(origin: str, destination: str) -> dict:
     """
     if settings.use_mock_data:
         return mock_data.calculate_route(origin, destination)
-    raise NotImplementedError("No routing API is wired up; run with USE_MOCK_DATA=true.")
+    return provider.calculate_route(origin, destination, timeout=settings.mcp_timeout_seconds)
 
 
 if __name__ == "__main__":

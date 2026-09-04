@@ -63,6 +63,7 @@ def search_flights(origin: str, destination: str, date: str, passengers: int) ->
                 "price_per_person": price,
                 "total_price": price * passengers,
                 "stops": 0 if km < 1500 else rng.choice([0, 1]),
+                "source": "mock",
             }
         )
     return sorted(options, key=lambda o: o["price_per_person"])
@@ -94,6 +95,7 @@ def search_trains(origin: str, destination: str, date: str, passengers: int) -> 
                     "price_per_person": price,
                     "total_price": price * passengers,
                     "travel_class": travel_class,
+                    "source": "mock",
                 }
             )
     return sorted(options, key=lambda o: o["price_per_person"])
@@ -124,6 +126,7 @@ def search_buses(origin: str, destination: str, date: str, passengers: int) -> l
                 "price_per_person": price,
                 "total_price": price * passengers,
                 "bus_type": rng.choice(["AC Sleeper", "AC Seater", "Non-AC Sleeper"]),
+                "source": "mock",
             }
         )
     return sorted(options, key=lambda o: o["price_per_person"])

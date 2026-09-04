@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 5 of 17.** MCP Gateway enforcing authentication, authorization and rate limits.
+> **Status: Phase 6 of 17.** Real providers, Redis caching and graceful degradation.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,46 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## Data sources
+
+`USE_MOCK_DATA=true` (the default) runs the whole system offline with no API keys.
+Every payload carries a `source` field, so where a result came from is visible in
+the data and not only in the configuration.
+
+| Domain | Mock | Real |
+|---|---|---|
+| Weather | seasonal, deterministic | Open-Meteo - free, no key |
+| Routes | distance x road factor | OSRM - free, no key |
+| Flights, trains, buses | derived from real distances | none: no free Indian API exists |
+| Hotels | rating-correlated pricing | none |
+
+With `USE_MOCK_DATA=false` the weather and route tools go live; the transport and
+hotel tools raise instead of quietly serving mock data. That is deliberate - the
+system never substitutes invented data for data you asked to be real. It also
+means false is only useful for demonstrating live providers, not for planning a
+whole trip, so the default is true.
+
+## Caching and failure handling
+
+Redis caches read-tool results, keyed on the tool name plus its sorted arguments,
+with a lifetime per tool: 15 minutes for prices, an hour for weather, a day for
+places and routes. Locally that turns a 298 ms search into a 0.4 ms one.
+
+Redis is a speed-up, never a source of truth. If it is down the system plans
+normally, and the rate limiter falls back to an in-process counter rather than
+quietly letting every call through.
+
+When an MCP server fails:
+
+- **Part of a domain** (trains down, flights up) - the plan continues on what is
+  left and the response says what was missed.
+- **A whole leg** (no transport at all, or no hotel) - the plan is rejected. An
+  itinerary with no way to get there is not a cheap plan, it is an incomplete
+  one, and the total would silently omit the cost.
+
+The message tells the truth about which happened: an outage is never reported as
+a budget problem.
 
 ## MCP Gateway
 
