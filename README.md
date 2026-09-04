@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 6 of 17.** Real providers, Redis caching and graceful degradation.
+> **Status: Phase 7 of 17.** LLM request extraction with a fallback provider.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,30 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## LLM fallback
+
+```
+primary (Groq) --fails--> fallback (Gemini) --fails--> rule-based reading
+```
+
+One retry on the primary covers a transient blip; after that the fallback gets
+one attempt. A reply that does not match the Pydantic schema counts as a
+failure, so a malformed answer falls back too rather than being half-trusted.
+
+There is no router, no model scoring and no cost optimiser. The only question
+this design answers is "the primary is down, can we keep going?".
+
+If **no** provider answers - including the case where no API key is configured at
+all - requirements are read with a plain keyword reader instead, and the response
+says so:
+
+```json
+"degraded": ["no LLM available, requirements were read with simple rules"]
+```
+
+That is what lets the whole system run with zero API keys. A degraded extraction
+is always labelled; it never passes for a normal one.
 
 ## Data sources
 

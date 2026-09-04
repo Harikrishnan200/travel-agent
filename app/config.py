@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
     gemini_model: str = "gemini-2.0-flash"
+    llm_timeout_seconds: float = 30.0
 
     # Infrastructure
     database_url: str = "postgresql+psycopg://travel:travel@localhost:5432/travel"

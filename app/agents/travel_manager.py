@@ -25,23 +25,25 @@ def build_transport_brief(state: dict) -> dict:
         "travelers": state["travelers"],
         "preferred_mode": preferences.get("transport_mode"),
         "max_journey_hours": preferences.get("max_journey_hours"),
-        "max_total_price": state.get("budget", 0) * TRANSPORT_SHARE,
+        "max_total_price": _share(state.get("budget"), TRANSPORT_SHARE),
     }
 
 
 def build_accommodation_brief(state: dict) -> dict:
     """Hotel budget is what is left after the transport actually chosen."""
-    budget = state.get("budget", 0)
-    transport_spent = _transport_cost(state)
-    remaining = max(budget - transport_spent, 0)
+    budget = state.get("budget")
+    cap = None
+    if budget is not None:
+        remaining = max(budget - _transport_cost(state), 0)
+        # Never allocate more than what is actually left, even if the share allows it.
+        cap = min(budget * HOTEL_SHARE, remaining * 0.7)
 
     return {
         "city": state["destination"],
         "check_in": state["start_date"],
         "check_out": state["end_date"],
         "travelers": state["travelers"],
-        # Never allocate more than what is actually left, even if the share allows it.
-        "max_total_price": min(budget * HOTEL_SHARE, remaining * 0.7),
+        "max_total_price": cap,
     }
 
 
@@ -54,6 +56,11 @@ def build_experience_brief(state: dict) -> dict:
         "interests": state.get("interests") or [],
         "travelers": state["travelers"],
     }
+
+
+def _share(budget: float | None, fraction: float) -> float | None:
+    """A slice of the budget, or no cap at all when the traveller gave no budget."""
+    return None if budget is None else budget * fraction
 
 
 def _transport_cost(state: dict) -> float:

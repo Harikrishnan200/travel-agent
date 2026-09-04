@@ -42,7 +42,7 @@ def test_one_transport_mode_down_still_produces_a_plan(plan_with_tools_down):
     result = plan_with_tools_down({"search_trains"}, "trains-down")
     assert result["status"] == "awaiting_approval"
     assert result["selected_transport"]["mode"] in {"flight", "bus"}
-    assert result["degraded"] == ["train search unavailable"]
+    assert "train search unavailable" in result["degraded"]
 
 
 def test_weather_down_still_produces_an_itinerary(plan_with_tools_down):
@@ -50,13 +50,13 @@ def test_weather_down_still_produces_an_itinerary(plan_with_tools_down):
     assert result["status"] == "awaiting_approval"
     assert len(result["itinerary"]["days"]) == result["duration_days"]
     assert result["weather"] == []
-    assert all("weather unavailable" in note for note in result["degraded"])
+    assert any("weather unavailable" in note for note in result["degraded"])
 
 
 def test_route_lookup_down_does_not_stop_planning(plan_with_tools_down):
     result = plan_with_tools_down({"calculate_route"}, "route-down")
     assert result["status"] == "awaiting_approval"
-    assert result["degraded"] == ["route calculation unavailable"]
+    assert "route calculation unavailable" in result["degraded"]
 
 
 # --- total outage on a leg: fail honestly, do not invent a plan -------------

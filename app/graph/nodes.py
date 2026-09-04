@@ -1,11 +1,15 @@
 """The workflow nodes.
 
-Phase 2: every node is a deterministic stub so the graph runs end to end with no
-LLM, no MCP and no database. Each stub carries a note naming the phase that
-replaces it. The routing logic (validate -> replan -> human review) is real from
-day one, because that is the part worth getting right early.
+Each node takes the state and returns only the keys it changes. The split of
+work is deliberate:
+
+- the LLM reads the traveller's message and (from Phase 8) writes the schedule;
+- Python owns every date and every rupee, in compute_costs and validate_plan.
+
+Nodes still carrying a stub note name the phase that finishes them.
 """
 
+import logging
 from datetime import date, timedelta
 
 from app.agents import travel_manager
@@ -13,9 +17,12 @@ from app.agents.accommodation_agent import research_accommodation as accommodati
 from app.agents.experience_agent import research_experience as experience_agent
 from app.agents.transport_agent import research_transport as transport_agent
 from app.config import get_settings
+from app.graph import extraction
 from app.graph.state import TravelState
+from app.llm.client import LLMUnavailable
 from app.tools import get_tools
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Rough local travel allowance per person per day (autos, metro, taxis).
@@ -28,41 +35,70 @@ LOCAL_TRANSPORT_PER_DAY = 250
 
 
 def parse_request(state: TravelState) -> dict:
-    """Extract structured requirements from the user's message.
+    """Extract structured requirements from the traveller's message.
 
-    Phase 7 replaces this with an LLM structured-output call. The stub returns a
-    fixed request so the rest of the graph has something to work with.
+    The LLM does the reading. If no provider answers we fall back to a plain
+    keyword reader so the system still plans a trip with no API keys configured,
+    and record that we did - a degraded extraction should never look like a
+    normal one.
 
-    Fields already present in the state are never overwritten: the caller may
-    have supplied requirements directly, and later phases resume a trip whose
-    requirements were extracted on an earlier run.
+    Fields already present in the state are never overwritten: a resumed trip
+    keeps the requirements extracted on an earlier run.
     """
-    start = date.today() + timedelta(days=14)
-    duration = 5
-    extracted = {
-        "origin": "Kochi",
-        "destination": "Delhi",
-        "start_date": start.isoformat(),
-        "end_date": (start + timedelta(days=duration - 1)).isoformat(),
-        "duration_days": duration,
-        "travelers": 2,
-        "budget": 50000.0,
-        "preferences": {"transport_mode": "train", "max_journey_hours": 12},
-        "interests": ["historical", "food"],
-    }
-    return {key: value for key, value in extracted.items() if state.get(key) in (None, "", 0)}
+    message = state.get("user_request", "")
+    degraded = list(state.get("degraded", []))
+
+    try:
+        extracted, result = extraction.extract_with_llm(message)
+        if result.fallback_used:
+            degraded.append(f"primary LLM unavailable, used {result.provider}")
+    except LLMUnavailable as exc:
+        logger.warning("llm unavailable, falling back to rule-based extraction: %s", exc)
+        extracted = extraction.extract_with_rules(message)
+        degraded.append("no LLM available, requirements were read with simple rules")
+
+    if not extracted.is_travel_request:
+        return {
+            "status": "invalid_request",
+            "validation_errors": [
+                "I am a travel planning assistant. Please describe the trip you would "
+                "like to plan, including where you are travelling from and to."
+            ],
+            "degraded": degraded,
+        }
+
+    fields = extraction.to_state(extracted)
+    updates = {key: value for key, value in fields.items() if state.get(key) in (None, "", 0, [])}
+    return {**updates, "degraded": degraded}
 
 
 def validate_request(state: TravelState) -> dict:
-    """Input guardrail: is this a travel request we can actually plan?
+    """Input guardrail: can we actually plan this? Phase 8 moves the rules into guardrails/."""
+    # parse_request may already have rejected the message as not being about
+    # travel. Re-checking here would bury that answer under field-level noise.
+    if state.get("status") == "invalid_request":
+        return {}
 
-    Phase 8 replaces this with the real guardrail module.
-    """
     errors: list[str] = []
+
     if not state.get("origin"):
-        errors.append("Origin city is missing.")
+        errors.append("I could not tell which city you are travelling from.")
     if not state.get("destination"):
-        errors.append("Destination city is missing.")
+        errors.append("I could not tell which city you are travelling to.")
+
+    duration = state.get("duration_days") or 0
+    if not 1 <= duration <= settings.max_trip_days:
+        errors.append(f"Trip length must be between 1 and {settings.max_trip_days} days.")
+
+    travelers = state.get("travelers") or 0
+    if not 1 <= travelers <= settings.max_travelers:
+        errors.append(f"Traveller count must be between 1 and {settings.max_travelers}.")
+
+    # A budget is optional: without one we still plan and report the cost.
+    budget = state.get("budget")
+    if budget is not None and budget <= 0:
+        errors.append("Budget must be a positive amount.")
+
     if errors:
         return {"status": "invalid_request", "validation_errors": errors}
     return {"status": "planning", "validation_errors": []}
@@ -229,8 +265,8 @@ def validate_plan(state: TravelState) -> dict:
     if len(days) != state.get("duration_days", 0):
         errors.append(f"Itinerary has {len(days)} days, expected {state.get('duration_days')}.")
 
-    budget = state.get("budget", 0)
-    if costs["total_cost"] > budget:
+    budget = state.get("budget")
+    if budget is not None and costs["total_cost"] > budget:
         over = costs["total_cost"] - budget
         errors.append(f"Budget exceeded by Rs {over:,.0f}.")
 
