@@ -6,7 +6,8 @@ policy itself, so they keep protecting the same rule afterwards.
 
 import pytest
 
-from app.tools import TOOL_IMPLEMENTATIONS, get_tools
+from app.tools import get_tools
+from gateway.mcp_router import TOOL_SERVER
 from gateway.policy import (
     ACTION_TOOLS,
     AGENT_TOOL_ACCESS,
@@ -70,5 +71,5 @@ def test_only_action_tools_require_approval():
     assert not any(requires_human_approval(tool) for tool in READ_TOOLS)
 
 
-def test_every_read_tool_has_an_implementation():
-    assert set(TOOL_IMPLEMENTATIONS) == READ_TOOLS
+def test_every_read_tool_is_routable_to_an_mcp_server():
+    assert set(TOOL_SERVER) == READ_TOOLS

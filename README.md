@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 4 of 17.** Four custom MCP servers exposing the seven read tools.
+> **Status: Phase 5 of 17.** MCP Gateway enforcing authentication, authorization and rate limits.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,47 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## MCP Gateway
+
+Every tool call goes through the gateway. It is the only door between the agents
+and the MCP servers.
+
+```mermaid
+flowchart LR
+    TA[Transport Agent] --> GW[MCP Gateway]
+    AA[Accommodation Agent] --> GW
+    EA[Experience Agent] --> GW
+    GW --> T[transport-mcp]
+    GW --> H[hotels-mcp]
+    GW --> P[places-mcp]
+    GW --> W[weather-mcp]
+```
+
+| Responsibility | How |
+|---|---|
+| Authentication | `X-API-Key` header must match `MCP_GATEWAY_API_KEY` |
+| Identity | `X-Agent-Name` header says which agent is calling |
+| Authorization | `AGENT_TOOL_ACCESS` in [gateway/policy.py](gateway/policy.py); a cross-domain call is `403` |
+| Discovery | `GET /tools` returns only that agent's tools, so its LLM never sees the rest |
+| Routing | `TOOL_SERVER` maps each tool to the MCP server that owns it |
+| Rate limiting | 60 calls/agent/minute, `429` beyond that (Redis-backed in Phase 6) |
+| HITL | action tools (`book_*`) are refused without an approval token |
+| Logging | one line per call: agent, tool, trip, duration, status |
+
+Failures map to status codes an agent can act on: `503` for an unreachable MCP
+server (carry on with the other tools), `400` for bad arguments, `429` for rate
+limits, `403` for anything unauthorized.
+
+### One process or five
+
+`SPLIT_PROCESSES=false` (the default) runs the agents, gateway and MCP servers
+in one process: no ports to manage, fast tests. `SPLIT_PROCESSES=true` makes both
+hops real HTTP - agents to gateway, gateway to MCP - which is how docker-compose
+runs it. Start the extra processes with `python scripts/run_services.py`.
+
+The authorization, rate limiting and routing code is identical either way; only
+the wire between the pieces changes.
 
 ## MCP servers
 

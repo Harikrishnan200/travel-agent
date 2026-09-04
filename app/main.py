@@ -4,7 +4,9 @@ from fastapi import FastAPI
 
 from app.api import trips
 from app.config import get_settings
+from app.logging_setup import configure_logging
 
+configure_logging()
 settings = get_settings()
 
 app = FastAPI(

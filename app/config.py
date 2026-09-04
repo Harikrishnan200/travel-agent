@@ -30,8 +30,16 @@ class Settings(BaseSettings):
     hotels_mcp_url: str = "http://localhost:9102/mcp"
     places_mcp_url: str = "http://localhost:9103/mcp"
     weather_mcp_url: str = "http://localhost:9104/mcp"
+
+    # False (the default) runs everything in one process: agents call the gateway
+    # as a function and the gateway calls the MCP servers in-process. True makes
+    # both hops real HTTP, which is how docker-compose runs it. The authorization,
+    # rate limiting and routing logic is identical either way - only the wire
+    # between the pieces changes.
+    split_processes: bool = False
     mcp_gateway_api_key: str = "dev-gateway-key"
     tool_rate_limit_per_minute: int = 60
+    mcp_timeout_seconds: float = 10.0
 
     # Data source
     use_mock_data: bool = True

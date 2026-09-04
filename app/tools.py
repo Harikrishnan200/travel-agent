@@ -1,48 +1,31 @@
 """Tool dispatch for the agents.
 
-Phase 3: tools are local function calls into the mock providers.
-Phase 5: this module calls the MCP Gateway over HTTP instead. The agents do not
-change, because they only ever receive a `{tool_name: callable}` mapping.
+An agent is handed a `{tool_name: callable}` mapping containing only the tools
+its domain allows. Every callable goes through the MCP Gateway, which is where
+authorization, rate limiting, routing and logging happen.
 
-Authorization is enforced here with the same policy table the Gateway uses, so
-an agent reaching for a tool outside its domain fails now, not only later.
+The mapping is why the agents never changed when tools moved from local function
+calls to MCP: they only ever see callables.
 """
 
 from collections.abc import Callable
 
-from gateway.policy import allowed_tools, check_access
-from mcp_servers.hotels.mock_data import search_hotels
-from mcp_servers.places.mock_data import calculate_route, search_places
-from mcp_servers.transport.mock_data import search_buses, search_flights, search_trains
-from mcp_servers.weather.mock_data import get_weather
-
-# tool name -> implementation. The only place tool names meet real functions.
-TOOL_IMPLEMENTATIONS: dict[str, Callable] = {
-    "search_flights": search_flights,
-    "search_trains": search_trains,
-    "search_buses": search_buses,
-    "search_hotels": search_hotels,
-    "search_places": search_places,
-    "get_weather": get_weather,
-    "calculate_route": calculate_route,
-}
+from app.mcp_client import call_tool
+from gateway.policy import allowed_tools
 
 
-def get_tools(agent: str) -> dict[str, Callable]:
-    """The tools `agent` is allowed to call, each wrapped in an authorization check.
+def get_tools(agent: str, trip_id: str | None = None) -> dict[str, Callable]:
+    """The tools `agent` may call, each routed through the gateway.
 
-    Handing back a filtered mapping means an agent cannot even see a tool outside
-    its domain; the wrapper is the backstop if one is somehow called anyway.
+    Handing back a filtered mapping means an agent never sees a tool outside its
+    domain. The gateway's own check is the backstop if one is called anyway.
     """
-    return {name: _authorized(agent, name) for name in sorted(allowed_tools(agent))}
+    return {name: _gateway_call(agent, name, trip_id) for name in sorted(allowed_tools(agent))}
 
 
-def _authorized(agent: str, tool: str) -> Callable:
-    implementation = TOOL_IMPLEMENTATIONS[tool]
-
-    def call(**kwargs):
-        check_access(agent, tool)
-        return implementation(**kwargs)
+def _gateway_call(agent: str, tool: str, trip_id: str | None) -> Callable:
+    def call(**arguments):
+        return call_tool(agent, tool, arguments, trip_id=trip_id)
 
     call.__name__ = tool
     return call
