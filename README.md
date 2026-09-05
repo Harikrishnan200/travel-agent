@@ -1,9 +1,11 @@
 # AI Travel Planning Agent
 
+[![CI](https://github.com/harikrishnan/travel-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/harikrishnan/travel-agent/actions/workflows/ci.yml)
+
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 15 of 17.** Runs under `docker compose up`.
+> **Status: Phase 16 of 17.** CI on every push and pull request.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Running it
@@ -129,6 +131,30 @@ flowchart TD
     HR -->|approve| FIN[finalize] --> OG[output_guard] --> END3[END]
     HR -->|wait| END3
 ```
+
+## Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and
+pull request:
+
+| Job | What it does |
+|---|---|
+| **lint** | `ruff check` and `ruff format --check` |
+| **test** | the suite on Python 3.12 **and** 3.13, against real Postgres and Redis service containers, with the 88% coverage floor enforced |
+| | then the 18 evaluation cases, which exit non-zero on any failure |
+| **docker** | builds the image, starts it, and checks `/health` answers |
+
+Two versions because 3.12 is what the Docker image ships and 3.13 is what it is
+developed on; a difference between them should fail here rather than in
+somebody's clone. Postgres is a service container so the persistence tests
+actually run, instead of skipping themselves the way they do on a machine
+without one.
+
+Building proves the image compiles; starting it proves the image is usable -
+and it runs with no database, no cache and no API keys, which is the state a
+first-time clone is in.
+
+No deploy step: there is nowhere this is meant to go.
 
 ## Running with Docker
 
