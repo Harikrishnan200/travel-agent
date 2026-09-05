@@ -11,6 +11,8 @@ malformed response is treated exactly like a failed call - and falls back too.
 """
 
 import json
+import re
+import time
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -26,6 +28,13 @@ Model = TypeVar("Model", bound=BaseModel)
 
 # One retry on the primary covers a transient blip without stalling the workflow.
 PRIMARY_ATTEMPTS = 2
+
+# Wait before retrying. A rate limit is the most common reason a call fails, and
+# retrying instantly is guaranteed to fail again - free tiers are measured per
+# minute. Honours the provider's own "try again in Ns" hint when it gives one.
+RETRY_BACKOFF_SECONDS = 5.0
+MAX_BACKOFF_SECONDS = 20.0
+RETRY_HINT = re.compile(r"try again in ([\d.]+)s")
 
 
 class LLMUnavailable(RuntimeError):
@@ -63,6 +72,8 @@ def call_llm(
                 logger.warning(
                     "llm_call_failed", provider=name, attempt=attempt + 1, error=str(exc)
                 )
+                if attempt + 1 < attempts:
+                    time.sleep(_backoff_for(str(exc)))
                 continue
 
             metrics.llm_calls.labels(provider=name, status="ok").inc()
@@ -73,6 +84,37 @@ def call_llm(
             )
 
     raise LLMUnavailable("All LLM providers failed: " + " | ".join(errors))
+
+
+def _backoff_for(error: str) -> float:
+    """How long to wait before trying again, using the provider's hint if there is one."""
+    hint = RETRY_HINT.search(error)
+    if hint:
+        return min(float(hint.group(1)) + 0.5, MAX_BACKOFF_SECONDS)
+    return RETRY_BACKOFF_SECONDS
+
+
+def _schema_for(model: type[BaseModel]) -> str:
+    """A compact schema for the prompt.
+
+    The full JSON schema carries titles and descriptions that cost a thousand
+    tokens and tell the model nothing it cannot see from the field names. On a
+    free tier measured in tokens per minute, that is the difference between
+    working and being rate limited.
+    """
+    schema = model.model_json_schema()
+    fields = {name: _describe_type(spec) for name, spec in schema.get("properties", {}).items()}
+    return json.dumps(fields, separators=(",", ":"))
+
+
+def _describe_type(spec: dict) -> str:
+    if "anyOf" in spec:
+        options = [_describe_type(option) for option in spec["anyOf"]]
+        return " or ".join(dict.fromkeys(options))
+    kind = spec.get("type", "any")
+    if kind == "array":
+        return f"array of {_describe_type(spec.get('items', {}))}"
+    return kind
 
 
 def _provider_chain() -> list[str]:
@@ -104,8 +146,10 @@ def _invoke_groq(system_prompt: str, user_prompt: str, model: type[BaseModel]) -
     from groq import Groq
 
     client = Groq(api_key=settings.groq_api_key, timeout=settings.llm_timeout_seconds)
-    schema = json.dumps(model.model_json_schema(), indent=2)
-    instructions = f"{system_prompt}\n\nReply with JSON matching this schema:\n{schema}"
+    instructions = (
+        f"{system_prompt}\n\nReply with a JSON object with exactly these keys "
+        f"and types:\n{_schema_for(model)}"
+    )
     response = client.chat.completions.create(
         model=settings.groq_model,
         messages=[

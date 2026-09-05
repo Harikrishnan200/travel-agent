@@ -4,6 +4,8 @@ No network: each provider's invoke function is replaced, so the chain logic is
 what is under test.
 """
 
+import json
+
 import pytest
 from pydantic import BaseModel
 
@@ -14,6 +16,13 @@ from app.llm.client import LLMUnavailable, call_llm
 class Answer(BaseModel):
     city: str
     days: int
+
+
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    """Skip the retry backoff. The delay is real, but waiting for it is not a test."""
+    monkeypatch.setattr(client, "RETRY_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(client, "MAX_BACKOFF_SECONDS", 0.0)
 
 
 @pytest.fixture
@@ -208,3 +217,47 @@ def test_the_groq_system_prompt_carries_the_schema(monkeypatch):
     assert "be helpful" in system
     assert '"city"' in system and '"days"' in system
     assert captured["messages"][1]["content"] == "plan a trip"
+
+
+# --- backing off ------------------------------------------------------------
+
+
+@pytest.fixture
+def real_backoff(monkeypatch):
+    """Undo the autouse fixture that skips waiting, so the maths can be checked."""
+    monkeypatch.setattr(client, "RETRY_BACKOFF_SECONDS", 5.0)
+    monkeypatch.setattr(client, "MAX_BACKOFF_SECONDS", 20.0)
+
+
+def test_a_rate_limit_hint_is_obeyed(real_backoff):
+    """Retrying instantly after "try again in 7.8s" is guaranteed to fail again."""
+    error = "Rate limit reached. Please try again in 7.7775s. Need more tokens?"
+    assert client._backoff_for(error) == pytest.approx(8.2775)
+
+
+def test_a_very_long_hint_is_capped(real_backoff):
+    assert client._backoff_for("try again in 600s") == 20.0
+
+
+def test_an_error_with_no_hint_uses_the_default_wait(real_backoff):
+    assert client._backoff_for("connection reset") == 5.0
+
+
+def test_the_prompt_schema_is_compact():
+    """The full JSON schema costs a thousand tokens and says nothing extra."""
+    from app.graph.extraction import ExtractedRequest
+
+    lean = client._schema_for(ExtractedRequest)
+    full = json.dumps(ExtractedRequest.model_json_schema())
+    assert len(lean) < len(full) / 3
+    for field in ExtractedRequest.model_fields:
+        assert field in lean
+
+
+def test_optional_and_list_types_survive_the_trim():
+    from app.graph.extraction import ExtractedRequest
+
+    lean = json.loads(client._schema_for(ExtractedRequest))
+    assert lean["origin"] == "string or null"
+    assert lean["interests"] == "array of string"
+    assert lean["is_travel_request"] == "boolean"

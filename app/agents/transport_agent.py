@@ -48,10 +48,41 @@ def research_transport(brief: dict, tools: dict) -> TransportResult:
         )
 
     recommended, reason = _choose(options, brief)
-    alternatives = [o for o in options if o.id != recommended.id][:5]
+    alternatives = _alternatives(options, recommended)
     return TransportResult(
         recommended=recommended, alternatives=alternatives, reason=reason, failures=failures
     )
+
+
+# How many alternatives to pass on. Enough for the re-planner to have somewhere
+# to go, few enough that the manager is not handed the whole search.
+MAX_ALTERNATIVES = 6
+
+
+def _alternatives(
+    options: list[TransportOption], recommended: TransportOption
+) -> list[TransportOption]:
+    """The runners-up, with every mode represented.
+
+    Taking the first few in the order they were collected would drop whole modes
+    off the end - buses always came last, so the re-planner could never offer
+    one. The cheapest of each mode is kept first, then the list is filled by
+    price.
+    """
+    rest = [option for option in options if option.id != recommended.id]
+
+    cheapest_per_mode = {}
+    for option in sorted(rest, key=lambda o: o.price_per_person):
+        cheapest_per_mode.setdefault(option.mode, option)
+
+    kept = list(cheapest_per_mode.values())
+    for option in sorted(rest, key=lambda o: o.price_per_person):
+        if len(kept) >= MAX_ALTERNATIVES:
+            break
+        if option not in kept:
+            kept.append(option)
+
+    return sorted(kept, key=lambda o: o.price_per_person)
 
 
 def _choose(options: list[TransportOption], brief: dict) -> tuple[TransportOption, str]:

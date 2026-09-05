@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 12 of 17.** Structured logging and Prometheus metrics.
+> **Status: Phase 13 of 17.** Evaluation dataset and runner.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,25 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## Evaluation
+
+```bash
+python -m evaluation.evaluate           # 18 cases, mock data, no LLM
+python -m evaluation.evaluate --llm     # against whatever LLM is configured
+python -m evaluation.evaluate --case basic_trip
+```
+
+18 cases in [evaluation/dataset.json](evaluation/dataset.json), each carrying a
+`why` so it is clear what would be lost if it were deleted. They cover request
+extraction, preference following (honoured *and* overridden), budget arithmetic,
+weather-aware scheduling, invalid and off-topic requests, prompt injection,
+human modification and approval, partial and total MCP failure, running with no
+LLM at all, and cross-domain tool authorization.
+
+Expectations are structural rather than exact strings - a chosen mode, a day
+count, a budget respected - so the suite tests behaviour and not wording. The
+runner exits non-zero on any failure, so CI can use it.
 
 ## Observability
 
