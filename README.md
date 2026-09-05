@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 8 of 17.** Input and output guardrails, deterministic validation.
+> **Status: Phase 9 of 17.** Re-planning: budget levers and weather rescheduling.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,28 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## Re-planning
+
+When validation fails, [app/validation/replan.py](app/validation/replan.py) tries
+four levers in a fixed order, cheapest change to the traveller first:
+
+1. a cheaper hotel (best rated among the cheaper options, not simply the cheapest)
+2. a cheaper transport option that still respects a stated time limit - and says
+   so plainly when nothing cheap enough fits it
+3. swap the priciest paid activity for a free one, or drop it
+4. move outdoor activities off wet days onto dry ones
+
+Each attempt applies the first lever that changes something, and the option it
+used is removed from the pool, so the next attempt moves on. Three attempts, then
+the traveller is asked to raise the budget or relax a preference. There is no
+optimiser, and there does not need to be: the validator has the final say.
+
+**The rule that keeps this honest:** a problem is only reported when it can
+actually be fixed. Rain is not a defect if there is nowhere drier to move to, and
+a slow journey is not a defect if nothing faster existed. The validator and the
+re-planner test the same conditions, so the loop cannot spin on something no
+lever can reach.
 
 ## Guardrails and validation
 

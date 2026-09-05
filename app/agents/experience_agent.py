@@ -11,11 +11,9 @@ import logging
 from datetime import date, timedelta
 
 from app.agents.schemas import DayWeather, ExperienceResult, Place, Route
+from app.itinerary_rules import ACTIVITIES_PER_DAY, day_capacity
 
 logger = logging.getLogger(__name__)
-
-# Activities per day. Enough to fill morning/afternoon/evening without a rush.
-ACTIVITIES_PER_DAY = 3
 
 
 def research_experience(brief: dict, tools: dict) -> ExperienceResult:
@@ -107,7 +105,7 @@ def _suggest_schedule(
     ranked_days = sorted(
         days, key=lambda d: forecast_by_date[d].rain_probability if d in forecast_by_date else 50
     )
-    capacity = {day: _day_capacity(day, days) for day in days}
+    capacity = {day: day_capacity(index + 1, len(days)) for index, day in enumerate(days)}
     assignment: dict[str, list[Place]] = {day: [] for day in days}
 
     # Deal one activity to each day per round, so nothing is left empty.
@@ -141,10 +139,3 @@ def _suggest_schedule(
         }
         for day in days
     ]
-
-
-def _day_capacity(day: str, days: list[str]) -> int:
-    """Arrival and departure days are partly spent travelling, so they hold less."""
-    if len(days) > 1 and day in (days[0], days[-1]):
-        return 1
-    return ACTIVITIES_PER_DAY

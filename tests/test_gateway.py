@@ -139,21 +139,35 @@ def test_approval_is_required_even_for_an_authorized_action_tool(monkeypatch):
 # --- rate limiting ----------------------------------------------------------
 
 
+def distinct_flight_calls(count):
+    """Different arguments each time, so the cache does not absorb the calls."""
+    return [{**FLIGHT_ARGS, "date": f"2026-09-{18 + index:02d}"} for index in range(count)]
+
+
 def test_calls_beyond_the_limit_are_rejected(monkeypatch):
     monkeypatch.setattr(settings, "tool_rate_limit_per_minute", 3)
-    for _ in range(3):
-        assert call("search_flights", FLIGHT_ARGS).status_code == 200
+    for arguments in distinct_flight_calls(3):
+        assert call("search_flights", arguments).status_code == 200
 
-    response = call("search_flights", FLIGHT_ARGS)
+    response = call("search_flights", {**FLIGHT_ARGS, "date": "2026-10-01"})
     assert response.status_code == 429
     assert "rate limit" in response.json()["detail"].lower()
 
 
+def test_a_cached_result_does_not_consume_the_rate_limit():
+    """The limit protects the MCP servers, and a cache hit never reaches one."""
+    from app.config import get_settings as fresh
+
+    limit = fresh().tool_rate_limit_per_minute
+    for _ in range(limit + 5):
+        assert call("search_flights", FLIGHT_ARGS).status_code == 200
+
+
 def test_the_rate_limit_is_per_agent(monkeypatch):
     monkeypatch.setattr(settings, "tool_rate_limit_per_minute", 2)
-    for _ in range(2):
-        call("search_flights", FLIGHT_ARGS)
-    assert call("search_flights", FLIGHT_ARGS).status_code == 429
+    for arguments in distinct_flight_calls(2):
+        call("search_flights", arguments)
+    assert call("search_flights", {**FLIGHT_ARGS, "date": "2026-10-02"}).status_code == 429
 
     experience = {**AUTH, "X-Agent-Name": "experience_agent"}
     other = call("get_weather", {"city": "Delhi", "date": "2026-09-18"}, headers=experience)

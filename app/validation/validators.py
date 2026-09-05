@@ -10,6 +10,8 @@ asks a model anything.
 
 from datetime import date, timedelta
 
+from app.itinerary_rules import day_capacity
+
 # A day with nothing at all planned is a gap, not an itinerary.
 MIN_ACTIVITIES_ON_A_FULL_DAY = 1
 
@@ -149,6 +151,46 @@ def validate_daily_schedule(state: dict) -> list[str]:
     return errors
 
 
+def validate_weather(state: dict) -> list[str]:
+    """Outdoor plans on a wet day, but only when a drier day could take them.
+
+    Same principle as the journey-time check: rain is not a defect in the plan,
+    it is a defect only if we could have scheduled around it and did not.
+    """
+    days = (state.get("itinerary") or {}).get("days", [])
+    forecast = {entry["date"]: entry for entry in state.get("weather", [])}
+    outdoor = {place["name"] for place in state.get("places", []) if place.get("outdoor")}
+    if not days or not forecast:
+        return []
+
+    # Mirrors what the re-planner can actually do: move an activity onto a dry
+    # day that has room, or trade it for an indoor activity already sitting on
+    # one. If neither is possible the rain is not a fixable defect.
+    def is_fixable(day: dict) -> bool:
+        if not forecast.get(day["date"], {}).get("good_for_outdoor"):
+            return False
+        has_room = len(day.get("activities", [])) < day_capacity(day["day"], len(days))
+        can_trade = any(name not in outdoor for name in day.get("activities", []))
+        return has_room or can_trade
+
+    if not any(is_fixable(day) for day in days):
+        return []
+
+    errors = []
+    for day in days:
+        weather = forecast.get(day["date"])
+        if not weather or weather.get("good_for_outdoor"):
+            continue
+        outdoors = [name for name in day.get("activities", []) if name in outdoor]
+        if outdoors:
+            errors.append(
+                f"Day {day['day']} has outdoor plans ({', '.join(outdoors)}) in "
+                f"{weather['condition']} ({weather['rain_probability']}% rain), and a "
+                "drier day has room."
+            )
+    return errors
+
+
 def validate_budget(state: dict, total_cost: float) -> list[str]:
     """The plan fits the money. Skipped when the traveller gave no budget."""
     budget = state.get("budget")
@@ -167,5 +209,6 @@ def validate_plan(state: dict, total_cost: float) -> list[str]:
         *validate_hotel(state),
         *validate_itinerary(state),
         *validate_daily_schedule(state),
+        *validate_weather(state),
         *validate_budget(state, total_cost),
     ]

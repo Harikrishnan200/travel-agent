@@ -100,16 +100,17 @@ def execute_tool(
     if requires_human_approval(tool) and not approval_token:
         raise HumanApprovalRequired(f"{tool} requires human approval before it can run.")
 
-    # 3. Is the agent calling too fast?
-    check_rate_limit(agent)
-
-    # 4. Serve read tools from cache when we can. Action tools are never cached.
+    # 3. Serve read tools from cache when we can. Action tools are never cached.
     key = cache.make_key(tool, arguments) if tool in READ_TOOLS else None
     if key is not None:
         hit = cache.get(key)
         if hit is not None:
             _log(agent, tool, trip_id, started, "ok", cache_hit=True)
             return hit
+
+    # 4. Is the agent calling too fast? Checked after the cache, because the
+    # limit exists to protect the MCP servers and a cache hit never reaches one.
+    check_rate_limit(agent)
 
     # 5. Route to whichever MCP server owns the tool.
     try:

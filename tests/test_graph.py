@@ -133,24 +133,29 @@ def test_impossible_budget_ends_in_needs_user_decision(graph):
     assert "budget" in out["final_response"].lower()
 
 
-def test_plans_that_fit_are_never_re_planned(graph):
+def test_a_plan_that_fits_is_delivered_within_budget(graph):
+    """Re-planning may still run for the weather, but the money must come out right."""
     out = run(graph, trip_id="fits", budget=50000.0)
-    assert out["replan_attempts"] == 0
     assert out["total_cost"] <= out["budget"]
+    assert out["status"] == "awaiting_approval"
+    assert out["validation_errors"] == []
 
 
 def test_replan_does_not_upgrade_the_hotel():
     state = {
         "replan_attempts": 0,
+        "validation_errors": ["Budget exceeded by Rs 1,000."],
         "selected_hotel": {"name": "Budget Inn", "total_price": 1800},
         "hotel_options": [{"name": "Luxury", "total_price": 9000}],
     }
     assert "selected_hotel" not in nodes.replan(state)
 
 
-def test_replan_removes_the_chosen_hotel_from_the_pool():
+def test_replan_delegates_to_the_lever_module():
+    """The node is a one-liner; the levers are tested in test_replan.py."""
     state = {
         "replan_attempts": 0,
+        "validation_errors": ["Budget exceeded by Rs 1,000."],
         "selected_hotel": {"name": "Expensive", "total_price": 9000},
         "hotel_options": [
             {"name": "Mid", "total_price": 5000, "rating": 4.0},
@@ -158,8 +163,8 @@ def test_replan_removes_the_chosen_hotel_from_the_pool():
         ],
     }
     updates = nodes.replan(state)
-    assert updates["selected_hotel"]["name"] == "Mid"  # best rated of the cheaper options
-    assert [h["name"] for h in updates["hotel_options"]] == ["Cheap"]
+    assert updates["selected_hotel"]["name"] == "Mid"
+    assert updates["replan_attempts"] == 1
 
 
 # --- output guard ----------------------------------------------------------

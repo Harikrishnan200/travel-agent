@@ -26,6 +26,7 @@ from app.guardrails import output_guard as output_rules
 from app.guardrails.input_guard import InputRejected, check_message, check_requirements
 from app.llm.client import LLMUnavailable, call_llm
 from app.tools import get_tools
+from app.validation import replan as replanner
 from app.validation import validators
 
 logger = logging.getLogger(__name__)
@@ -311,27 +312,8 @@ def validate_plan(state: TravelState) -> dict:
 
 
 def replan(state: TravelState) -> dict:
-    """Fix what the validator complained about.
-
-    Phase 9 adds the transport and activity steps; for now the first and
-    cheapest lever is the hotel.
-    """
-    attempts = state.get("replan_attempts", 0) + 1
-    updates: dict = {"replan_attempts": attempts}
-
-    current = (state.get("selected_hotel") or {}).get("total_price", 0)
-    cheaper = [h for h in state.get("hotel_options", []) if h.get("total_price", 0) < current]
-    if cheaper:
-        # Best-rated among the cheaper options, not simply the cheapest.
-        best = max(cheaper, key=lambda h: (h.get("rating", 0), -h.get("total_price", 0)))
-        updates["selected_hotel"] = {
-            **best,
-            "reason": f"Downgraded to {best['name']} to fit the budget.",
-        }
-        # Drop it from the pool so the next attempt tries something different.
-        updates["hotel_options"] = [h for h in state["hotel_options"] if h["name"] != best["name"]]
-
-    return updates
+    """Fix what the validator complained about. The levers live in validation/replan.py."""
+    return replanner.replan(state, compute_costs)
 
 
 # --------------------------------------------------------------------------
