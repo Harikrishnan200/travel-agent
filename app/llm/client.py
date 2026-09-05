@@ -13,6 +13,8 @@ malformed response is treated exactly like a failed call - and falls back too.
 import json
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -29,12 +31,17 @@ Model = TypeVar("Model", bound=BaseModel)
 # One retry on the primary covers a transient blip without stalling the workflow.
 PRIMARY_ATTEMPTS = 2
 
-# Wait before retrying. A rate limit is the most common reason a call fails, and
-# retrying instantly is guaranteed to fail again - free tiers are measured per
-# minute. Honours the provider's own "try again in Ns" hint when it gives one.
-RETRY_BACKOFF_SECONDS = 5.0
+# Wait before retrying, but only as long as the failure warrants. A rate limit
+# is measured per minute, so retrying instantly is guaranteed to fail again -
+# those wait, honouring the provider's own "try again in Ns" hint. Anything else
+# (a timeout, a dropped connection) gets a token pause, because several LLM
+# calls happen per request and a five second wait on each one turns a slow
+# response into a minute-long one.
+RATE_LIMIT_BACKOFF_SECONDS = 5.0
+TRANSIENT_BACKOFF_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 20.0
 RETRY_HINT = re.compile(r"try again in ([\d.]+)s")
+RATE_LIMITED = re.compile(r"rate.?limit|429|quota|too many requests", re.IGNORECASE)
 
 
 class LLMUnavailable(RuntimeError):
@@ -47,6 +54,52 @@ class LLMResult(BaseModel):
     data: dict
     provider: str
     fallback_used: bool
+
+
+# Which providers answered during the current request. A context variable rather
+# than workflow state, because the question being answered is "what did this API
+# call use?" - and a resumed trip has already used an LLM on an earlier call.
+_usage: ContextVar[list[dict] | None] = ContextVar("llm_usage", default=None)
+
+
+@contextmanager
+def track_usage():
+    """Collect which providers answer inside this block."""
+    token = _usage.set([])
+    try:
+        yield lambda: list(_usage.get() or [])
+    finally:
+        _usage.reset(token)
+
+
+def _record(provider: str, status: str, duration_ms: float, fallback_used: bool) -> None:
+    calls = _usage.get()
+    if calls is not None:
+        calls.append(
+            {
+                "provider": provider,
+                "status": status,
+                "duration_ms": round(duration_ms, 1),
+                "fallback_used": fallback_used,
+            }
+        )
+
+
+def summarize_usage(calls: list[dict]) -> dict | None:
+    """One line about the LLM behind a response, for the API to return."""
+    if not calls:
+        return None
+
+    answered = [call for call in calls if call["status"] == "ok"]
+    return {
+        # The provider that actually produced the answers, if only one did.
+        "provider": answered[-1]["provider"] if answered else None,
+        "providers_tried": list(dict.fromkeys(call["provider"] for call in calls)),
+        "fallback_used": any(call["fallback_used"] for call in answered),
+        "calls": len(calls),
+        "failed_calls": len(calls) - len(answered),
+        "total_duration_ms": round(sum(call["duration_ms"] for call in calls), 1),
+    }
 
 
 def call_llm(
@@ -63,12 +116,15 @@ def call_llm(
     for index, name in enumerate(providers):
         attempts = PRIMARY_ATTEMPTS if index == 0 else 1
         for attempt in range(attempts):
+            started = time.monotonic()
             try:
                 raw = _invoke(name, system_prompt, user_prompt, response_model)
                 parsed = response_model.model_validate(raw)
             except Exception as exc:
+                elapsed = (time.monotonic() - started) * 1000
                 errors.append(f"{name}: {exc}")
                 metrics.llm_calls.labels(provider=name, status="error").inc()
+                _record(name, "error", elapsed, fallback_used=index > 0)
                 logger.warning(
                     "llm_call_failed", provider=name, attempt=attempt + 1, error=str(exc)
                 )
@@ -77,6 +133,7 @@ def call_llm(
                 continue
 
             metrics.llm_calls.labels(provider=name, status="ok").inc()
+            _record(name, "ok", (time.monotonic() - started) * 1000, fallback_used=index > 0)
             if index > 0:
                 logger.warning("llm_fallback_used", provider=name)
             return parsed, LLMResult(
@@ -87,11 +144,13 @@ def call_llm(
 
 
 def _backoff_for(error: str) -> float:
-    """How long to wait before trying again, using the provider's hint if there is one."""
+    """How long to wait before trying again, based on why the call failed."""
     hint = RETRY_HINT.search(error)
     if hint:
         return min(float(hint.group(1)) + 0.5, MAX_BACKOFF_SECONDS)
-    return RETRY_BACKOFF_SECONDS
+    if RATE_LIMITED.search(error):
+        return RATE_LIMIT_BACKOFF_SECONDS
+    return TRANSIENT_BACKOFF_SECONDS
 
 
 def _schema_for(model: type[BaseModel]) -> str:

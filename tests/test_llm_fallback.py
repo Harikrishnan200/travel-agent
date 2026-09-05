@@ -21,7 +21,8 @@ class Answer(BaseModel):
 @pytest.fixture(autouse=True)
 def no_waiting(monkeypatch):
     """Skip the retry backoff. The delay is real, but waiting for it is not a test."""
-    monkeypatch.setattr(client, "RETRY_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(client, "RATE_LIMIT_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(client, "TRANSIENT_BACKOFF_SECONDS", 0.0)
     monkeypatch.setattr(client, "MAX_BACKOFF_SECONDS", 0.0)
 
 
@@ -225,7 +226,8 @@ def test_the_groq_system_prompt_carries_the_schema(monkeypatch):
 @pytest.fixture
 def real_backoff(monkeypatch):
     """Undo the autouse fixture that skips waiting, so the maths can be checked."""
-    monkeypatch.setattr(client, "RETRY_BACKOFF_SECONDS", 5.0)
+    monkeypatch.setattr(client, "RATE_LIMIT_BACKOFF_SECONDS", 5.0)
+    monkeypatch.setattr(client, "TRANSIENT_BACKOFF_SECONDS", 0.5)
     monkeypatch.setattr(client, "MAX_BACKOFF_SECONDS", 20.0)
 
 
@@ -239,8 +241,16 @@ def test_a_very_long_hint_is_capped(real_backoff):
     assert client._backoff_for("try again in 600s") == 20.0
 
 
-def test_an_error_with_no_hint_uses_the_default_wait(real_backoff):
-    assert client._backoff_for("connection reset") == 5.0
+def test_a_rate_limit_without_a_hint_still_waits(real_backoff):
+    assert client._backoff_for("429 Too Many Requests") == 5.0
+    assert client._backoff_for("Rate limit reached for model") == 5.0
+
+
+def test_an_ordinary_failure_barely_waits(real_backoff):
+    """Several LLM calls happen per request; five seconds each makes a slow
+    response into a minute-long one."""
+    assert client._backoff_for("connection reset") == 0.5
+    assert client._backoff_for("read timed out") == 0.5
 
 
 def test_the_prompt_schema_is_compact():

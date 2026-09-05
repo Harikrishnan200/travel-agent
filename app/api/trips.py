@@ -6,6 +6,7 @@ in `trips` for the questions the checkpointer cannot answer - listing a user's
 trips, or looking one up by status.
 """
 
+import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 from app.db import database
 from app.graph.graph import build_graph
 from app.graph.state import new_state
+from app.llm.client import summarize_usage, track_usage
 from app.logging_setup import get_logger, log_context
 
 logger = get_logger(__name__)
@@ -53,6 +55,11 @@ class TripResponse(BaseModel):
     final_response: str | None = None
     # Present while the workflow is paused for the traveller.
     awaiting_decision: dict | None = None
+
+    # How long this request took, and which LLM answered it. Null for a request
+    # that needed no LLM - a cached read, or a run with no provider configured.
+    duration_ms: float | None = None
+    llm: dict | None = None
 
 
 class ApproveRequest(BaseModel):
@@ -93,7 +100,13 @@ def _plan_of(state: dict) -> dict | None:
     }
 
 
-def _to_response(trip_id: str, state: dict, decision: dict | None = None) -> TripResponse:
+def _to_response(
+    trip_id: str,
+    state: dict,
+    decision: dict | None = None,
+    duration_ms: float | None = None,
+    llm: dict | None = None,
+) -> TripResponse:
     return TripResponse(
         trip_id=trip_id,
         status=state.get("status", "unknown"),
@@ -103,7 +116,14 @@ def _to_response(trip_id: str, state: dict, decision: dict | None = None) -> Tri
         degraded=state.get("degraded", []),
         final_response=state.get("final_response"),
         awaiting_decision=decision,
+        duration_ms=duration_ms,
+        llm=llm,
     )
+
+
+def _elapsed_ms(started: float) -> float:
+    """How long a request took, to a tenth of a millisecond."""
+    return round((time.monotonic() - started) * 1000, 1)
 
 
 def _pending_decision(trip_id: str) -> dict | None:
@@ -136,7 +156,8 @@ def _resume(trip_id: str, decision: dict, event: str) -> TripResponse:
             detail=f"This plan cannot be {decision['action']}d. You can: {', '.join(offered)}.",
         )
 
-    with log_context(trip_id=trip_id):
+    started = time.monotonic()
+    with log_context(trip_id=trip_id), track_usage() as llm_usage:
         database.record_event(trip_id, event, decision)
         logger.info("human_decision", action=decision["action"])
 
@@ -144,9 +165,10 @@ def _resume(trip_id: str, decision: dict, event: str) -> TripResponse:
 
         plan = _plan_of(state)
         database.save_trip(trip_id, state, plan)
+        llm = summarize_usage(llm_usage())
         database.record_event(trip_id, "workflow_continued", {"status": state.get("status")})
-        logger.info("workflow_continued", status=state.get("status"))
-        return _to_response(trip_id, state, _pending_decision(trip_id))
+        logger.info("workflow_continued", status=state.get("status"), llm=llm)
+        return _to_response(trip_id, state, _pending_decision(trip_id), _elapsed_ms(started), llm)
 
 
 @router.post("", response_model=TripResponse, status_code=201)
@@ -157,7 +179,8 @@ def create_trip(request: CreateTripRequest) -> TripResponse:
 
     # The row goes in before anything else, so a trip that fails mid-plan still
     # leaves a record, and so its events have something to hang off.
-    with log_context(trip_id=trip_id):
+    started = time.monotonic()
+    with log_context(trip_id=trip_id), track_usage() as llm_usage:
         initial = new_state(trip_id, request.message)
         database.save_trip(trip_id, initial)
         database.record_event(trip_id, "trip_requested", {"message": request.message})
@@ -167,15 +190,16 @@ def create_trip(request: CreateTripRequest) -> TripResponse:
 
         plan = _plan_of(state)
         database.save_trip(trip_id, state, plan)
+        llm = summarize_usage(llm_usage())
         outcome = {
             "status": state.get("status"),
             "total_cost": state.get("total_cost"),
             "replan_attempts": state.get("replan_attempts"),
             "validation_errors": state.get("validation_errors"),
         }
-        database.record_event(trip_id, "planning_finished", outcome)
-        logger.info("planning_finished", **outcome)
-        return _to_response(trip_id, state, _pending_decision(trip_id))
+        database.record_event(trip_id, "planning_finished", {**outcome, "llm": llm})
+        logger.info("planning_finished", **outcome, llm=llm)
+        return _to_response(trip_id, state, _pending_decision(trip_id), _elapsed_ms(started), llm)
 
 
 @router.post("/{trip_id}/approve", response_model=TripResponse)
@@ -223,9 +247,12 @@ def list_trips(limit: int = Query(default=20, ge=1, le=100)) -> list[TripSummary
 @router.get("/{trip_id}", response_model=TripResponse)
 def get_trip(trip_id: str) -> TripResponse:
     """Fetch a trip, resuming it from the checkpointer."""
+    started = time.monotonic()
     snapshot = get_graph().get_state({"configurable": {"thread_id": trip_id}})
     if snapshot.values:
-        return _to_response(trip_id, snapshot.values, _pending_decision(trip_id))
+        return _to_response(
+            trip_id, snapshot.values, _pending_decision(trip_id), _elapsed_ms(started)
+        )
 
     # The checkpoint may be gone (in-memory saver, restarted process) while the
     # trip row survives. Answer from what we still have rather than 404ing.

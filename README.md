@@ -110,6 +110,45 @@ pasted into an innocently named field is caught too.
 
 `APP_ENV=development` renders for humans; anything else renders JSON.
 
+### What every response says about itself
+
+Two headers on every endpoint:
+
+```
+X-Request-ID:        3740095f9231
+X-Response-Time-Ms:  4398.5
+```
+
+and, on the trip endpoints, the same timing plus which model actually answered:
+
+```json
+{
+  "status": "awaiting_approval",
+  "duration_ms": 4395.4,
+  "llm": {
+    "provider": "groq",
+    "providers_tried": ["groq"],
+    "fallback_used": false,
+    "calls": 2,
+    "failed_calls": 0,
+    "total_duration_ms": 3966.0
+  }
+}
+```
+
+`llm` is null when a request needed no model at all - a plain read, or a run with
+no provider configured. When the primary fails it reports what really happened:
+
+```json
+"llm": {"provider": "gemini", "providers_tried": ["groq", "gemini"],
+        "fallback_used": true, "calls": 6, "failed_calls": 4}
+```
+
+`total_duration_ms` against `duration_ms` says how much of a slow response was
+the model and how much was us. That distinction paid for itself immediately: it
+showed a fallback taking 69 seconds, of which 20 was our own retry backoff
+waiting as if every failure were a rate limit.
+
 ### Metrics
 
 `GET /metrics`, in Prometheus format. Four of them, each answering a question

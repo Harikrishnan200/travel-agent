@@ -256,3 +256,115 @@ def test_objects_without_secrets_are_not_stringified():
     assert RedactingFilter().filter(record)
     assert record.args[0] is original  # untouched, still a Path
     assert record.args[1] == 5
+
+
+# --- what every response reports about itself -------------------------------
+
+
+def test_every_response_carries_its_duration(client):
+    """On every endpoint, including the ones whose body has no room for it."""
+    for path in ("/health", "/", "/metrics"):
+        assert float(client.get(path).headers["X-Response-Time-Ms"]) >= 0
+
+
+def test_a_trip_response_reports_how_long_it_took(client):
+    created = client.post(
+        "/api/v1/trips", json={"message": "Plan a 5 day trip from Kochi to Delhi for 2"}
+    ).json()
+
+    assert created["duration_ms"] > 0
+    # The body's number and the header's should describe the same request.
+    assert (
+        created["duration_ms"]
+        <= float(client.get("/health").headers["X-Response-Time-Ms"]) + created["duration_ms"]
+    )
+
+
+def test_a_response_with_no_llm_says_so(client):
+    """No provider is configured in tests, so nothing answered."""
+    created = client.post(
+        "/api/v1/trips", json={"message": "Plan a 5 day trip from Kochi to Delhi for 2"}
+    ).json()
+    assert created["llm"] is None
+
+
+def test_the_answering_provider_is_reported(client, monkeypatch):
+    from app.llm import client as llm_client
+
+    def answered(provider, system_prompt, user_prompt, model):
+        return {field: None for field in model.model_fields} | {
+            "is_travel_request": True,
+            "origin": "Kochi",
+            "destination": "Delhi",
+            "duration_days": 5,
+            "travelers": 2,
+            "interests": [],
+        }
+
+    monkeypatch.setattr(llm_client.settings, "groq_api_key", "test-key")
+    monkeypatch.setattr(llm_client, "_invoke", answered)
+
+    created = client.post(
+        "/api/v1/trips", json={"message": "Plan a 5 day trip from Kochi to Delhi for 2"}
+    ).json()
+
+    assert created["llm"]["provider"] == "groq"
+    assert created["llm"]["fallback_used"] is False
+    assert created["llm"]["calls"] >= 1
+
+
+def test_falling_back_is_visible_in_the_response(client, monkeypatch):
+    """The traveller's answer should say which model actually produced it."""
+    from app.llm import client as llm_client
+
+    def groq_down(provider, system_prompt, user_prompt, model):
+        if provider == "groq":
+            raise TimeoutError("outage")
+        return {field: None for field in model.model_fields} | {
+            "is_travel_request": True,
+            "origin": "Kochi",
+            "destination": "Delhi",
+            "duration_days": 5,
+            "travelers": 2,
+            "interests": [],
+        }
+
+    monkeypatch.setattr(llm_client.settings, "groq_api_key", "test-key")
+    monkeypatch.setattr(llm_client.settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(llm_client, "_invoke", groq_down)
+
+    created = client.post(
+        "/api/v1/trips", json={"message": "Plan a 5 day trip from Kochi to Delhi for 2"}
+    ).json()
+
+    assert created["llm"]["provider"] == "gemini"
+    assert created["llm"]["providers_tried"] == ["groq", "gemini"]
+    assert created["llm"]["fallback_used"] is True
+    assert created["llm"]["failed_calls"] > 0
+
+
+def test_usage_from_one_request_does_not_leak_into_the_next(client, monkeypatch):
+    """A resumed trip has already used an LLM; this call's report is about this call."""
+    from app.llm import client as llm_client
+
+    monkeypatch.setattr(llm_client.settings, "groq_api_key", "test-key")
+    monkeypatch.setattr(
+        llm_client,
+        "_invoke",
+        lambda provider, s, u, model: {field: None for field in model.model_fields}
+        | {
+            "is_travel_request": True,
+            "origin": "Kochi",
+            "destination": "Delhi",
+            "duration_days": 5,
+            "travelers": 2,
+            "interests": [],
+        },
+    )
+
+    trip_id = client.post(
+        "/api/v1/trips", json={"message": "Plan a 5 day trip from Kochi to Delhi for 2"}
+    ).json()["trip_id"]
+
+    # A plain read needs no LLM, so it must report none.
+    assert client.get(f"/api/v1/trips/{trip_id}").json()["llm"] is None

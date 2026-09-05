@@ -1,5 +1,6 @@
 """FastAPI application entrypoint."""
 
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
@@ -43,9 +44,16 @@ async def add_request_context(request: Request, call_next):
     it and the whole request can be found in the logs.
     """
     request_id = request.headers.get("X-Request-ID") or new_request_id()
+    started = time.monotonic()
+
     with log_context(request_id=request_id, path=request.url.path):
         response = await call_next(request)
+
+    duration_ms = round((time.monotonic() - started) * 1000, 1)
     response.headers["X-Request-ID"] = request_id
+    # On every endpoint, including the ones whose body has no room for it.
+    response.headers["X-Response-Time-Ms"] = str(duration_ms)
+    logger.info("request_finished", status_code=response.status_code, duration_ms=duration_ms)
     return response
 
 
