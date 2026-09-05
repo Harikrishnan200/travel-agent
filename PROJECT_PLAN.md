@@ -1,5 +1,17 @@
 # PROJECT PLAN — AI Travel Planning Agent (Multi-Agent + MCP)
 
+> **All 17 phases are complete.** This is the plan as written before any code
+> existed, kept unedited so the plan and the result can be compared. Where the
+> build diverged from it, [README.md](README.md) describes what was actually
+> done and [docs/interview-guide.md](docs/interview-guide.md) says why.
+>
+> The main divergences: the MCP servers gained real providers (trivago, Open-Meteo,
+> OSRM, AviationStack, Tavily) rather than staying mock-only; there are 13 graph
+> nodes rather than 11, because feedback needed its own node and the
+> "needs user decision" path had to remain answerable; and the LLM answers are
+> cached, which the plan did not anticipate but a twenty-request daily free tier
+> made necessary.
+
 > Guiding rule: **simplicity > abstraction**. Every component below exists because
 > I can answer "why is this here?" in one sentence. Anything I couldn't justify
 > was cut.
