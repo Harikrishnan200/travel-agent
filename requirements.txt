@@ -11,9 +11,11 @@ langgraph-checkpoint-postgres==2.0.9
 # --- MCP (streamable HTTP needs >=1.8) ---
 mcp==1.18.0
 
-# --- LLM providers (Phase 7) ---
-groq==0.13.1
-google-genai==0.3.0
+# --- LLM providers ---
+# Both SDKs move fast and their older releases have incompatible schema
+# handling. Keep these pinned to what the tests actually run against.
+groq==1.7.0
+google-genai==2.22.0
 
 # --- Infrastructure (Phase 6/10) ---
 sqlalchemy==2.0.36

@@ -110,6 +110,9 @@ Hotels, weather and routes then come from live sources with no key at all. See
 | `model_not_found` | the model was retired - see the note under [LLM fallback](#llm-fallback) |
 | `"database": "unavailable"` on `/health` | Postgres is not running; planning still works, resuming does not |
 | a request takes 40s | the model is slow, not the app - compare `llm.total_duration_ms` with `duration_ms` |
+| you changed `.env` but nothing changed | a running process read it at startup. Restart uvicorn, or `docker compose up -d --force-recreate app mcp` - containers capture `env_file` when they are created |
+| `Address already in use` | something else holds port 8000, often a container from an earlier `docker compose up`. Use `--port 8001`, or `docker compose down` |
+| `ModuleNotFoundError: No module named 'app'` | uvicorn was started from a subdirectory. Run it from the project root |
 
 ## Workflow
 
