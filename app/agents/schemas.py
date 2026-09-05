@@ -60,6 +60,10 @@ class Place(BaseModel):
     entry_fee: float
     visit_duration_hours: float
     outdoor: bool
+    # Optional, from a provider that can describe places (Tavily). Prose and a
+    # link only: every figure above stays ours.
+    about: str | None = None
+    learn_more: str | None = None
 
 
 class DayWeather(BaseModel):

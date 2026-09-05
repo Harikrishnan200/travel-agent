@@ -20,17 +20,22 @@ from gateway import service
 
 
 @pytest.fixture(autouse=True)
-def no_llm_calls(monkeypatch):
-    """No test may call a real LLM.
+def no_outbound_api_calls(monkeypatch):
+    """No test may call a real external API.
 
-    With a key in .env the suite would otherwise make live API calls: slow,
-    costly, and dependent on someone else's uptime. Clearing the keys makes
-    call_llm raise LLMUnavailable immediately, which is the path the tests
-    assert anyway. tests/test_llm_fallback.py sets its own fake keys.
+    With keys in .env the suite would otherwise make live calls: slow, metered,
+    and dependent on someone else's uptime. Every optional provider is switched
+    off by clearing its key, which is also the configuration most people run.
+    Tests that need a provider fake it, or set their own key.
     """
     settings = get_settings()
-    monkeypatch.setattr(settings, "groq_api_key", "")
-    monkeypatch.setattr(settings, "gemini_api_key", "")
+    for key in (
+        "groq_api_key",
+        "gemini_api_key",
+        "aviation_stack_api_key",
+        "tavily_api_key",
+    ):
+        monkeypatch.setattr(settings, key, "")
 
 
 @pytest.fixture(autouse=True)

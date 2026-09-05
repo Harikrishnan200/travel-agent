@@ -156,3 +156,103 @@ def test_a_cache_hit_is_visible_in_the_metrics(client):
 def test_validation_errors_are_grouped_into_stable_reasons(error, reason):
     """Free-text errors as label values would make the metric useless."""
     assert metrics.classify_error(error) == reason
+
+
+# --- redaction in library logs ----------------------------------------------
+# structlog covers our own lines. Everything else is written by libraries, which
+# is where a key is most likely to escape: httpx logs the URLs it fetches, and a
+# key in a query string goes straight into the logs with it.
+
+
+def test_a_key_in_a_query_string_is_removed():
+    """Found for real: httpx logged an AviationStack URL with the key in it."""
+    from app.logging_setup import redact_text
+
+    leaked = "HTTP Request: GET https://api.aviationstack.com/v1/flights?access_key=abc123def456"
+    assert "abc123def456" not in redact_text(leaked)
+    assert "access_key=[redacted]" in redact_text(leaked)
+
+
+@pytest.mark.parametrize("param", ["access_key", "api_key", "apikey", "token", "password"])
+def test_every_credential_parameter_name_is_covered(param):
+    from app.logging_setup import redact_text
+
+    assert "s3cret" not in redact_text(f"GET https://example.com/x?{param}=s3cret&other=1")
+
+
+def test_the_rest_of_the_url_survives():
+    from app.logging_setup import redact_text
+
+    cleaned = redact_text("GET https://api.x.com/v1/flights?access_key=s3cret&dep_iata=COK")
+    assert "dep_iata=COK" in cleaned
+
+
+def test_library_records_keep_their_number_formatting(caplog):
+    """The filter must not stringify args: uvicorn formats records with %d."""
+    import logging
+
+    from app.logging_setup import RedactingFilter
+
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1, "%s - %d", ("GET /health", 200), None
+    )
+    assert RedactingFilter().filter(record)
+    assert record.getMessage() == "GET /health - 200"
+
+
+def test_a_secret_in_a_string_argument_is_still_removed():
+    import logging
+
+    from app.logging_setup import RedactingFilter
+
+    record = logging.LogRecord(
+        "httpx",
+        logging.INFO,
+        __file__,
+        1,
+        "fetched %s in %dms",
+        ("https://x.com?api_key=s3cretvalue", 12),
+        None,
+    )
+    assert RedactingFilter().filter(record)
+    assert "s3cretvalue" not in record.getMessage()
+    assert "12ms" in record.getMessage()
+
+
+def test_a_secret_in_a_non_string_argument_is_still_removed():
+    """The one that actually leaked: httpx logs the URL as an httpx.URL, not a str."""
+    import logging
+
+    import httpx
+
+    from app.logging_setup import RedactingFilter
+
+    record = logging.LogRecord(
+        "httpx",
+        logging.INFO,
+        __file__,
+        1,
+        'HTTP Request: %s %s "%s %d %s"',
+        ("GET", httpx.URL("https://api.x.com/v1?access_key=s3cretvalue"), "HTTP/1.1", 200, "OK"),
+        None,
+    )
+    assert RedactingFilter().filter(record)
+
+    message = record.getMessage()
+    assert "s3cretvalue" not in message
+    assert "access_key=[redacted]" in message
+    assert "200" in message  # the number survived
+
+
+def test_objects_without_secrets_are_not_stringified():
+    """Only arguments that actually carry a secret are replaced."""
+    import logging
+    from pathlib import Path
+
+    from app.logging_setup import RedactingFilter
+
+    original = Path("/tmp/harmless.txt")
+    record = logging.LogRecord("x", logging.INFO, __file__, 1, "%s took %d", (original, 5), None)
+    assert RedactingFilter().filter(record)
+    assert record.args[0] is original  # untouched, still a Path
+    assert record.args[1] == 5

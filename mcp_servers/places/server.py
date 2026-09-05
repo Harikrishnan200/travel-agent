@@ -10,14 +10,18 @@ Run standalone:
 from mcp.server.fastmcp import FastMCP
 
 from app.config import get_settings
+from app.logging_setup import configure_logging
 from mcp_servers.places import mock_data, provider
 from mcp_servers.validation import validate_count
 
+configure_logging()
 settings = get_settings()
 
-# Attractions have no free, keyless API either, so search_places always serves
-# mock data and tags every record with "source": "mock". calculate_route does
-# have one (OSRM), so it honours USE_MOCK_DATA.
+# There is no free structured attractions API, so the catalogue itself is ours
+# and every record is tagged "source": "mock". With a Tavily key the top few
+# results gain a real description and a link to their source - prose only, never
+# figures. calculate_route does have a free provider (OSRM), so it honours
+# USE_MOCK_DATA.
 PLACES_ARE_MOCK_ONLY = True
 
 mcp = FastMCP(
@@ -44,8 +48,14 @@ def search_places(city: str, category: str | None = None, max_results: int = 10)
     """
     validate_count(max_results, "max_results", maximum=50)
 
-    # Always mock: see PLACES_ARE_MOCK_ONLY above.
-    return mock_data.search_places(city, category, max_results)
+    # The catalogue is ours: see PLACES_ARE_MOCK_ONLY above.
+    places = mock_data.search_places(city, category, max_results)
+
+    # With a Tavily key, describe the first few from real web sources. Prices and
+    # durations stay ours - only the prose comes from outside.
+    if settings.tavily_api_key and places:
+        places = provider.describe_places(places, city, settings.tavily_api_key)
+    return places
 
 
 @mcp.tool()

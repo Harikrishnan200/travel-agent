@@ -7,6 +7,25 @@ hand-writing 45 city pairs.
 
 import math
 
+# IATA airport codes, for the providers that speak them.
+IATA = {
+    "Kochi": "COK",
+    "Bangalore": "BLR",
+    "Chennai": "MAA",
+    "Delhi": "DEL",
+    "Mumbai": "BOM",
+    "Hyderabad": "HYD",
+    "Jaipur": "JAI",
+    "Srinagar": "SXR",
+    "Goa": "GOI",
+}
+
+
+def iata_code(city: str) -> str | None:
+    """The airport code for a city, or None if it has no airport."""
+    return IATA.get(city)
+
+
 # name -> (latitude, longitude, has_airport, has_railway)
 CITIES: dict[str, tuple[float, float, bool, bool]] = {
     "Kochi": (9.9312, 76.2673, True, True),

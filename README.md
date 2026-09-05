@@ -249,8 +249,9 @@ the data and not only in the configuration.
 | Hotels | rating-correlated pricing | **trivago's public MCP server** - live prices, no key |
 | Weather | seasonal, deterministic | Open-Meteo - free, no key |
 | Routes | distance x road factor | OSRM - free, no key |
-| Flights, trains, buses | derived from real distances | *mock only* - no free keyless API exists |
-| Places | curated + generated | *mock only* - same |
+| Flights | derived from real distances | **AviationStack** - real airlines, flight numbers and timetables (free key) |
+| Places | curated + generated | catalogue is ours; **Tavily** adds a real description and a source link (free key) |
+| Trains, buses | derived from real distances | *mock only* - no free API exists |
 
 ### Why some domains are still ours
 
@@ -263,6 +264,32 @@ cover them wrap RapidAPI or Amadeus and need a paid subscription, so those tools
 always serve mock data and tag every record `"source": "mock"`. That tag travels
 all the way to the plan, so where a number came from is visible in the answer and
 not only in the configuration.
+
+### Real schedules, estimated fares
+
+AviationStack's free plan gives the airlines, flight numbers and departure times
+that genuinely fly a route - but no fares, and its date filter is a paid feature.
+So a flight here is a **real flight on your date at an estimated price**, and
+every record says exactly that:
+
+```json
+{"id": "IX1816", "provider": "Air India Express", "depart_time": "23:00",
+ "duration_hours": 3.3, "price_per_person": 5650,
+ "source": "aviationstack", "price_estimated": true}
+```
+
+Tavily is used the same way round: it writes the prose, never the numbers.
+
+```
+India Gate  - "open daily, free to visit, located near Rajpath"
+              https://delhitourism.gov.in/tourist_place/india_gate.html
+```
+
+Entry fees, durations and every total stay in Python. A figure lifted out of web
+prose is exactly the kind of fact this system computes rather than believes.
+
+Both are optional: without a key the matching tool serves mock data, and the
+record's `source` says which you got.
 
 Two things worth knowing about calling somebody else's MCP server, both learned
 by doing it:

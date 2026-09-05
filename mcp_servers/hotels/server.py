@@ -7,9 +7,11 @@ Run standalone:
 from mcp.server.fastmcp import FastMCP
 
 from app.config import get_settings
+from app.logging_setup import configure_logging
 from mcp_servers.hotels import mock_data, provider
 from mcp_servers.validation import validate_count, validate_date
 
+configure_logging()
 settings = get_settings()
 
 mcp = FastMCP(

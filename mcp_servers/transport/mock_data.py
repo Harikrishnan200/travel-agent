@@ -23,6 +23,17 @@ BUS_OPERATORS = ["KSRTC", "VRL Travels", "SRS Travels", "Orange Tours"]
 MAX_BUS_DISTANCE_KM = 1200
 
 
+def price_for_flight(km: float, seed: str) -> int:
+    """A plausible fare for a distance, in rupees.
+
+    Shared with the real provider, which gets true schedules from AviationStack
+    but no fares - so the estimate has to come from somewhere, and it should be
+    the same estimate in both places.
+    """
+    rng = random.Random(f"fare|{seed}")
+    return int((2200 + km * 2.1) * rng.uniform(0.85, 1.3) / 50) * 50
+
+
 def _rng(*parts: object) -> random.Random:
     """A generator seeded by the query, so results are stable but varied."""
     return random.Random("|".join(str(p) for p in parts))
@@ -48,11 +59,12 @@ def search_flights(origin: str, destination: str, date: str, passengers: int) ->
 
     options = []
     for code, airline in rng.sample(AIRLINES, k=3):
-        price = int((2200 + km * 2.1) * rng.uniform(0.85, 1.3) / 50) * 50
+        number = rng.randint(100, 999)
+        price = price_for_flight(km, seed=f"{code}-{number}|{date}")
         depart_hour = rng.choice([6, 9, 13, 17, 20])
         options.append(
             {
-                "id": f"{code}-{rng.randint(100, 999)}",
+                "id": f"{code}-{number}",
                 "mode": "flight",
                 "provider": airline,
                 "origin": start,

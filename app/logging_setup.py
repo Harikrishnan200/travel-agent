@@ -33,14 +33,63 @@ SECRET_VALUES = re.compile(r"\b(sk-[A-Za-z0-9]{16,}|gsk_[A-Za-z0-9]{16,}|AIza[A-
 
 REDACTED = "[redacted]"
 
+# Secrets in URLs. Libraries log the URLs they fetch, and a key in a query
+# string ends up in the logs however careful our own logging is - httpx logs
+# "GET https://api...?access_key=..." at INFO, which is where this was found.
+SECRET_QUERY_PARAMS = re.compile(
+    r"((?:access_key|api_key|apikey|key|token|password)=)[^&\s\"']+", re.IGNORECASE
+)
+
+
+class RedactingFilter(logging.Filter):
+    """Strip credentials out of standard-library log records.
+
+    structlog handles our own lines; this covers everything written by the
+    libraries we use, which is where a key is most likely to escape.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_text(record.msg)
+
+        if isinstance(record.args, dict):
+            record.args = {key: _redact_arg(value) for key, value in record.args.items()}
+        elif isinstance(record.args, tuple):
+            record.args = tuple(_redact_arg(arg) for arg in record.args)
+        return True
+
+
+def _redact_arg(arg):
+    """Redact one log argument, leaving anything without a secret exactly as it was.
+
+    Checking only for str would miss the important case: httpx logs the URL it
+    fetched as an httpx.URL object, not a string, which is how an API key in a
+    query string reached the logs in the first place. Numbers are returned
+    untouched so the %d and %f placeholders that uvicorn uses still work.
+    """
+    if arg is None or isinstance(arg, bool | int | float):
+        return arg
+
+    text = str(arg)
+    cleaned = redact_text(text)
+    # Only replace when something was actually removed, so an object keeps its
+    # own formatting in the overwhelmingly common case.
+    return cleaned if cleaned != text else arg
+
+
+def redact_text(text: str) -> str:
+    """Remove credentials from a line of text, by query parameter or by shape."""
+    text = SECRET_QUERY_PARAMS.sub(rf"\1{REDACTED}", text)
+    return SECRET_VALUES.sub(REDACTED, text)
+
 
 def redact_secrets(logger, method_name, event_dict):
     """Drop anything that looks like a credential, by field name or by shape."""
     for key, value in list(event_dict.items()):
         if SECRET_FIELDS.search(key):
             event_dict[key] = REDACTED
-        elif isinstance(value, str) and SECRET_VALUES.search(value):
-            event_dict[key] = SECRET_VALUES.sub(REDACTED, value)
+        elif isinstance(value, str):
+            event_dict[key] = redact_text(value)
     return event_dict
 
 
@@ -91,13 +140,17 @@ def configure_logging() -> None:
         cache_logger_on_first_use=True,
     )
 
-    # Keep the standard library's loggers (uvicorn, sqlalchemy) readable too.
+    # Keep the standard library's loggers (uvicorn, httpx, sqlalchemy) readable,
+    # and run every one of their records through the redaction filter.
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
         datefmt="%H:%M:%S",
         force=True,
     )
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(RedactingFilter())
+
     _configured = True
 
 

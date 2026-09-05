@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     # Data source
     use_mock_data: bool = True
 
+    # Optional providers. Each is used only when its key is set; without one the
+    # matching tool falls back to mock data and says so in the record's "source".
+    aviation_stack_api_key: str = ""
+    tavily_api_key: str = ""
+
     # Planning limits (used by the validator / re-planner later)
     max_replan_attempts: int = 3
     max_trip_days: int = 30
