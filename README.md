@@ -210,12 +210,25 @@ blocks anything resembling a credential.
 primary (Groq) --fails--> fallback (Gemini) --fails--> rule-based reading
 ```
 
-> **Picking a model.** Groq retires models periodically, and the default here
-> (`openai/gpt-oss-120b`) may not be on your account. If a call 404s with
-> `model_not_found`, list what you have and set `GROQ_MODEL` to one of them:
+Verified against both real providers. With Groq forced to fail, Gemini takes
+over and produces the same extraction, and the response says so:
+
+```json
+"degraded": ["primary LLM unavailable, used gemini"]
+```
+
+> **Picking a model.** Both providers retire models, and both defaults here
+> (`openai/gpt-oss-120b`, `gemini-3.6-flash`) may not be on your account -
+> `gemini-2.0-flash` and `llama-3.3-70b-versatile` were already gone when this
+> was written. If a call 404s, list what your key can reach and set `GROQ_MODEL`
+> or `GEMINI_MODEL` accordingly:
 >
 > ```python
-> from groq import Groq; print([m.id for m in Groq(api_key="...").models.list().data])
+> from groq import Groq
+> print([m.id for m in Groq(api_key="...").models.list().data])
+>
+> from google import genai
+> print([m.name for m in genai.Client(api_key="...").models.list()])
 > ```
 >
 > Put real keys in `.env`, never in `.env.example` - that file is committed.

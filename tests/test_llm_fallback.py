@@ -270,3 +270,39 @@ def test_nested_models_are_described_not_flattened():
     lean = json.loads(client._schema_for(ItineraryDescription))
     assert lean["days"] == [{"day": "integer", "summary": "string"}]
     assert lean["overview"] == "string"
+
+
+def test_gemini_is_asked_for_json_at_temperature_zero(monkeypatch):
+    """Verified against the real API; this keeps the call shape from drifting."""
+    import sys
+    from types import SimpleNamespace
+
+    captured = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(text='{"city": "Delhi", "days": 5}')
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.models = FakeModels()
+
+    fake_types = SimpleNamespace(GenerateContentConfig=lambda **kwargs: dict(kwargs))
+    fake_genai = SimpleNamespace(Client=FakeClient, types=fake_types)
+
+    monkeypatch.setattr(client.settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(client.settings, "gemini_model", "gemini-3.6-flash")
+    monkeypatch.setitem(sys.modules, "google", SimpleNamespace(genai=fake_genai))
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+
+    result = client._invoke_gemini("be helpful", "plan a trip", Answer)
+
+    assert result == {"city": "Delhi", "days": 5}
+    assert captured["model"] == "gemini-3.6-flash"
+    assert captured["contents"] == "plan a trip"
+    assert captured["config"]["response_mime_type"] == "application/json"
+    assert captured["config"]["temperature"] == 0
+    assert captured["config"]["system_instruction"] == "be helpful"
+    assert captured["client_kwargs"]["api_key"] == "test-key"

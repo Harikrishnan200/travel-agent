@@ -184,3 +184,51 @@ def test_requirements_already_in_state_are_not_overwritten():
 
     assert "destination" not in updates
     assert "budget" not in updates
+
+
+# --- normalising what a model actually says ---------------------------------
+# Both providers answer in their own words. Gemini says "historical places"
+# where the places tool understands "historical"; without normalising, a stated
+# interest would simply vanish.
+
+
+@pytest.mark.parametrize(
+    ("said", "expected"),
+    [
+        ("historical", "historical"),
+        ("historical places", "historical"),
+        ("Historic Sites", "historical"),
+        ("heritage", "historical"),
+        ("street food", "food"),
+        ("cuisine", "food"),
+        ("museums", "culture"),
+        ("trekking", "adventure"),
+        ("markets", "shopping"),
+        ("historical monuments and forts", "historical"),
+        ("teleportation", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_interests_are_mapped_onto_searchable_categories(said, expected):
+    from app.graph.extraction import normalize_interest
+
+    assert normalize_interest(said) == expected
+
+
+def test_a_models_wording_survives_into_the_plan():
+    """The exact phrasing Gemini returned, which used to be dropped."""
+    state = to_state(ExtractedRequest(destination="Delhi", interests=["historical places", "food"]))
+    assert state["interests"] == ["historical", "food"]
+
+
+def test_duplicates_after_normalising_are_collapsed():
+    state = to_state(
+        ExtractedRequest(destination="Delhi", interests=["historical", "heritage", "monuments"])
+    )
+    assert state["interests"] == ["historical"]
+
+
+def test_the_order_the_traveller_gave_is_kept():
+    state = to_state(ExtractedRequest(destination="Delhi", interests=["food", "heritage"]))
+    assert state["interests"] == ["food", "historical"]

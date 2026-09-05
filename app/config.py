@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     # Groq retired the Llama 3.3 models; check /models on your account if this 404s.
     groq_model: str = "openai/gpt-oss-120b"
-    gemini_model: str = "gemini-2.0-flash"
+    # Google retires models too: 2.0-flash is already gone. If a call 404s,
+    # list the models on your key and pick one that supports generateContent.
+    gemini_model: str = "gemini-3.6-flash"
     llm_timeout_seconds: float = 30.0
 
     # Infrastructure

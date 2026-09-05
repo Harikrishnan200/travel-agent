@@ -21,6 +21,52 @@ from mcp_servers.cities import CITIES
 logger = logging.getLogger(__name__)
 
 VALID_INTERESTS = {"historical", "nature", "food", "culture", "adventure", "shopping"}
+
+# What a model or a traveller might say, mapped onto the categories the places
+# tool understands. Without this, Gemini's "historical places" would simply be
+# dropped and the traveller's stated interest lost.
+INTEREST_SYNONYMS = {
+    "historical": "historical",
+    "historical places": "historical",
+    "historical sites": "historical",
+    "historic": "historical",
+    "history": "historical",
+    "heritage": "historical",
+    "monuments": "historical",
+    "nature": "nature",
+    "outdoors": "nature",
+    "scenery": "nature",
+    "food": "food",
+    "cuisine": "food",
+    "eating": "food",
+    "street food": "food",
+    "culture": "culture",
+    "cultural": "culture",
+    "art": "culture",
+    "museums": "culture",
+    "adventure": "adventure",
+    "trekking": "adventure",
+    "hiking": "adventure",
+    "shopping": "shopping",
+    "markets": "shopping",
+    "bazaar": "shopping",
+}
+
+
+def normalize_interest(interest: str | None) -> str | None:
+    """Map a stated interest onto a category we can search for, or drop it."""
+    if not interest:
+        return None
+    cleaned = interest.strip().lower()
+    if cleaned in INTEREST_SYNONYMS:
+        return INTEREST_SYNONYMS[cleaned]
+    # "historical monuments and forts" - fall back to any category named inside.
+    for word, category in INTEREST_SYNONYMS.items():
+        if word in cleaned:
+            return category
+    return None
+
+
 VALID_MODES = {"flight", "train", "bus"}
 
 # What a model or a traveller might say, mapped to the mode we use internally.
@@ -123,8 +169,18 @@ def to_state(extracted: ExtractedRequest) -> dict:
         "travelers": extracted.travelers or DEFAULT_TRAVELERS,
         "budget": extracted.budget,
         "preferences": preferences,
-        "interests": [i for i in extracted.interests if i in VALID_INTERESTS],
+        "interests": _clean_interests(extracted.interests),
     }
+
+
+def _clean_interests(interests: list[str]) -> list[str]:
+    """Normalise, drop what we cannot search for, and keep the order given."""
+    cleaned = []
+    for interest in interests:
+        category = normalize_interest(interest)
+        if category and category not in cleaned:
+            cleaned.append(category)
+    return cleaned
 
 
 # --- the rule-based reader --------------------------------------------------
