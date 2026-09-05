@@ -22,6 +22,9 @@ class TravelState(TypedDict, total=False):
     budget: float
     preferences: dict  # e.g. {"transport_mode": "train", "max_journey_hours": 12}
     interests: list[str]  # e.g. ["historical", "food"]
+    # Interests the traveller asked for *more* of. Distinct from interests: asking
+    # again for something already listed must change the plan, not be a no-op.
+    emphasis: list[str]
 
     # --- raw research results (kept as an audit trail of what tools returned) ---
     transport_options: dict  # {"flights": [...], "trains": [...], "buses": [...]}

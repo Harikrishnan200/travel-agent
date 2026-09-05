@@ -54,6 +54,8 @@ def build_experience_brief(state: dict) -> dict:
         "start_date": state["start_date"],
         "duration_days": state["duration_days"],
         "interests": state.get("interests") or [],
+        # Categories to favour when there is not room for everything.
+        "emphasis": state.get("emphasis") or [],
         "travelers": state["travelers"],
     }
 

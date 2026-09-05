@@ -253,3 +253,59 @@ def test_an_impossible_plan_can_still_be_rejected(client):
         f"/api/v1/trips/{created['trip_id']}/approve", json={"approved": False}
     ).json()
     assert response["status"] == "rejected"
+
+
+def test_asking_for_more_of_an_existing_interest_changes_the_plan(client):
+    """The brief's own demo feedback, and it used to do nothing.
+
+    "Add more historical places" when historical is already an interest merged a
+    list with itself, so the plan came back identical while claiming to have been
+    modified.
+    """
+    historical = {
+        "India Gate",
+        "Red Fort",
+        "Qutub Minar",
+        "Humayun's Tomb",
+        "Jama Masjid",
+        "Delhi Old Fort",
+        "Delhi Stepwell",
+        "Heritage Walk in Delhi",
+    }
+
+    def count(plan):
+        scheduled = [a for day in plan["itinerary"]["days"] for a in day["activities"]]
+        return sum(1 for name in scheduled if name in historical)
+
+    created = plan(
+        client,
+        "Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 60000, "
+        "I like historical places and food",
+    )
+    before = count(created["plan"])
+
+    after = client.post(
+        f"/api/v1/trips/{created['trip_id']}/modify",
+        json={"feedback": "add more historical places"},
+    ).json()
+
+    assert count(after["plan"]) > before
+
+
+def test_emphasis_outranks_the_weather_preference(client):
+    """The traveller asked; the weather is advice. The validator still flags it."""
+    created = plan(
+        client,
+        "Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 60000, I like food",
+    )
+
+    after = client.post(
+        f"/api/v1/trips/{created['trip_id']}/modify",
+        json={"feedback": "add more historical places"},
+    ).json()
+
+    scheduled = [a for day in after["plan"]["itinerary"]["days"] for a in day["activities"]]
+    assert any(
+        name in {"India Gate", "Red Fort", "Qutub Minar", "Humayun's Tomb", "Jama Masjid"}
+        for name in scheduled
+    )

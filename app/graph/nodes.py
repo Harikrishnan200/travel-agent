@@ -410,6 +410,11 @@ def apply_feedback(state: TravelState) -> dict:
         merged = list(state.get("interests") or [])
         merged += [i for i in intent.add_interests if i not in merged]
         updates["interests"] = merged
+        # Asking for "more historical places" when historical is already an
+        # interest used to change nothing at all, because merging a list with
+        # itself is a no-op. What the traveller wants is more of it, so the
+        # request is recorded separately and the Experience Agent weights it.
+        updates["emphasis"] = intent.add_interests
 
     # Apply the money levers straight away, reusing the same functions the
     # automatic re-planner uses.

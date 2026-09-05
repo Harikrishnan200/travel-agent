@@ -51,7 +51,11 @@ def _fetch_places(brief: dict, tools: dict, failures: list[str]) -> list[Place]:
         except Exception as exc:
             logger.warning("places search failed: category=%s error=%s", interest, exc)
             failures.append(f"places search unavailable for {interest or 'all categories'}")
-    return sorted(found.values(), key=lambda p: -p.rating)
+
+    # Rating decides the order, except that a category the traveller asked for
+    # more of comes first - otherwise there is no way to act on "more of these".
+    emphasis = set(brief.get("emphasis") or [])
+    return sorted(found.values(), key=lambda p: (p.category not in emphasis, -p.rating))
 
 
 def _fetch_weather(brief: dict, tools: dict, failures: list[str]) -> list[DayWeather]:
@@ -98,8 +102,16 @@ def _suggest_schedule(
         return [{"date": day, "activities": []} for day in days]
 
     forecast_by_date = {w.date: w for w in weather}
-    outdoor = [p for p in places if p.outdoor]
-    indoor = [p for p in places if not p.outdoor]
+    emphasis = set(brief.get("emphasis") or [])
+
+    # Anything the traveller asked for more of is dealt first, whatever the
+    # weather says. They asked; the weather is advice. The validator still flags
+    # an outdoor plan on a wet day, so the trade-off stays visible.
+    wanted = [p for p in places if p.category in emphasis]
+    rest = [p for p in places if p.category not in emphasis]
+
+    outdoor = [p for p in rest if p.outdoor]
+    indoor = [p for p in rest if not p.outdoor]
 
     # Driest days first, so the best outdoor activities land on the best days.
     ranked_days = sorted(
@@ -111,7 +123,10 @@ def _suggest_schedule(
     # Deal one activity to each day per round, so nothing is left empty.
     for _ in range(ACTIVITIES_PER_DAY):
         for day in ranked_days:
-            if len(assignment[day]) >= capacity[day] or not (outdoor or indoor):
+            if len(assignment[day]) >= capacity[day] or not (wanted or outdoor or indoor):
+                continue
+            if wanted:
+                assignment[day].append(wanted.pop(0))
                 continue
             forecast = forecast_by_date.get(day)
             wet = forecast is not None and not forecast.good_for_outdoor

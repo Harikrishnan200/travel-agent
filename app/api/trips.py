@@ -95,6 +95,7 @@ def _plan_of(state: dict) -> dict | None:
         "end_date": state.get("end_date"),
         "travelers": state.get("travelers"),
         "budget": state.get("budget"),
+        "interests": state.get("interests"),
         "transport": state.get("selected_transport"),
         "hotel": state.get("selected_hotel"),
         "itinerary": state.get("itinerary"),
