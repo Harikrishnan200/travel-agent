@@ -16,6 +16,12 @@ from mcp_servers.validation import validate_count, validate_date
 
 settings = get_settings()
 
+# No free, keyless API exists for Indian flights, trains or buses - the MCP
+# servers that cover them all sit behind a paid RapidAPI subscription. These
+# tools therefore always serve mock data, and every record they return carries
+# "source": "mock" so a consumer can see that in the data and not just here.
+MOCK_ONLY = True
+
 mcp = FastMCP(
     "transport",
     instructions="Search flights, Indian trains and buses between two cities.",
@@ -40,9 +46,8 @@ def search_flights(origin: str, destination: str, date: str, passengers: int = 1
     validate_date(date)
     validate_count(passengers, "passengers")
 
-    if settings.use_mock_data:
-        return mock_data.search_flights(origin, destination, date, passengers)
-    raise NotImplementedError("No free flight API is wired up; run with USE_MOCK_DATA=true.")
+    # Always mock: see MOCK_ONLY above.
+    return mock_data.search_flights(origin, destination, date, passengers)
 
 
 @mcp.tool()
@@ -60,9 +65,8 @@ def search_trains(origin: str, destination: str, date: str, passengers: int = 1)
     validate_date(date)
     validate_count(passengers, "passengers")
 
-    if settings.use_mock_data:
-        return mock_data.search_trains(origin, destination, date, passengers)
-    raise NotImplementedError("No free Indian rail API is wired up; run with USE_MOCK_DATA=true.")
+    # Always mock: see MOCK_ONLY above.
+    return mock_data.search_trains(origin, destination, date, passengers)
 
 
 @mcp.tool()
@@ -80,9 +84,8 @@ def search_buses(origin: str, destination: str, date: str, passengers: int = 1) 
     validate_date(date)
     validate_count(passengers, "passengers")
 
-    if settings.use_mock_data:
-        return mock_data.search_buses(origin, destination, date, passengers)
-    raise NotImplementedError("No free bus API is wired up; run with USE_MOCK_DATA=true.")
+    # Always mock: see MOCK_ONLY above.
+    return mock_data.search_buses(origin, destination, date, passengers)
 
 
 if __name__ == "__main__":

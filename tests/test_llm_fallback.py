@@ -261,3 +261,12 @@ def test_optional_and_list_types_survive_the_trim():
     assert lean["origin"] == "string or null"
     assert lean["interests"] == "array of string"
     assert lean["is_travel_request"] == "boolean"
+
+
+def test_nested_models_are_described_not_flattened():
+    """A model told only "array of object" answers with an array of strings."""
+    from app.graph.nodes import ItineraryDescription
+
+    lean = json.loads(client._schema_for(ItineraryDescription))
+    assert lean["days"] == [{"day": "integer", "summary": "string"}]
+    assert lean["overview"] == "string"

@@ -15,6 +15,11 @@ from mcp_servers.validation import validate_count
 
 settings = get_settings()
 
+# Attractions have no free, keyless API either, so search_places always serves
+# mock data and tags every record with "source": "mock". calculate_route does
+# have one (OSRM), so it honours USE_MOCK_DATA.
+PLACES_ARE_MOCK_ONLY = True
+
 mcp = FastMCP(
     "places",
     instructions="Search attractions in an Indian city and measure routes between cities.",
@@ -39,9 +44,8 @@ def search_places(city: str, category: str | None = None, max_results: int = 10)
     """
     validate_count(max_results, "max_results", maximum=50)
 
-    if settings.use_mock_data:
-        return mock_data.search_places(city, category, max_results)
-    raise NotImplementedError("No free places API is wired up; run with USE_MOCK_DATA=true.")
+    # Always mock: see PLACES_ARE_MOCK_ONLY above.
+    return mock_data.search_places(city, category, max_results)
 
 
 @mcp.tool()

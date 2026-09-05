@@ -99,21 +99,37 @@ def _schema_for(model: type[BaseModel]) -> str:
 
     The full JSON schema carries titles and descriptions that cost a thousand
     tokens and tell the model nothing it cannot see from the field names. On a
-    free tier measured in tokens per minute, that is the difference between
+    free tier metered in tokens per minute, that is the difference between
     working and being rate limited.
+
+    Nested models are described in full, not flattened to "object": a model told
+    only that it needs "an array of object" answers with an array of strings.
     """
     schema = model.model_json_schema()
-    fields = {name: _describe_type(spec) for name, spec in schema.get("properties", {}).items()}
-    return json.dumps(fields, separators=(",", ":"))
+    return json.dumps(_describe_object(schema, schema.get("$defs", {})), separators=(",", ":"))
 
 
-def _describe_type(spec: dict) -> str:
+def _describe_object(spec: dict, defs: dict) -> dict:
+    return {name: _describe_type(field, defs) for name, field in spec.get("properties", {}).items()}
+
+
+def _describe_type(spec: dict, defs: dict, depth: int = 0):
+    """One field's type, as either a type name or a nested shape."""
+    if "$ref" in spec and depth < 4:
+        target = defs.get(spec["$ref"].rsplit("/", 1)[-1], {})
+        return _describe_object(target, defs)
+
     if "anyOf" in spec:
-        options = [_describe_type(option) for option in spec["anyOf"]]
+        options = [_describe_type(option, defs, depth + 1) for option in spec["anyOf"]]
+        objects = [option for option in options if isinstance(option, dict)]
+        if objects:
+            return objects[0]
         return " or ".join(dict.fromkeys(options))
+
     kind = spec.get("type", "any")
     if kind == "array":
-        return f"array of {_describe_type(spec.get('items', {}))}"
+        items = _describe_type(spec.get("items", {}), defs, depth + 1)
+        return [items] if isinstance(items, dict) else f"array of {items}"
     return kind
 
 

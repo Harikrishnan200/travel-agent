@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field
 class TransportOption(BaseModel):
     id: str
     mode: str  # flight | train | bus
+    # Where the data came from ("mock", "trivago", ...). Carried all the way to
+    # the plan, so provenance is visible in the answer and not only in the logs.
+    source: str = "unknown"
     provider: str
     origin: str
     destination: str
@@ -30,6 +33,7 @@ class TransportResult(BaseModel):
 
 class Hotel(BaseModel):
     name: str
+    source: str = "unknown"
     city: str
     location: str
     rating: float
@@ -49,6 +53,7 @@ class AccommodationResult(BaseModel):
 
 class Place(BaseModel):
     name: str
+    source: str = "unknown"
     city: str
     category: str
     rating: float

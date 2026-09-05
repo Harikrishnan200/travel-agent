@@ -227,18 +227,38 @@ is always labelled; it never passes for a normal one.
 Every payload carries a `source` field, so where a result came from is visible in
 the data and not only in the configuration.
 
-| Domain | Mock | Real |
+| Domain | Mock | Real, with `USE_MOCK_DATA=false` |
 |---|---|---|
+| Hotels | rating-correlated pricing | **trivago's public MCP server** - live prices, no key |
 | Weather | seasonal, deterministic | Open-Meteo - free, no key |
 | Routes | distance x road factor | OSRM - free, no key |
-| Flights, trains, buses | derived from real distances | none: no free Indian API exists |
-| Hotels | rating-correlated pricing | none |
+| Flights, trains, buses | derived from real distances | *mock only* - no free keyless API exists |
+| Places | curated + generated | *mock only* - same |
 
-With `USE_MOCK_DATA=false` the weather and route tools go live; the transport and
-hotel tools raise instead of quietly serving mock data. That is deliberate - the
-system never substitutes invented data for data you asked to be real. It also
-means false is only useful for demonstrating live providers, not for planning a
-whole trip, so the default is true.
+### Why some domains are still ours
+
+Where a free public MCP server exists and is good, we call it. [trivago's](https://mcp.trivago.com/docs)
+is hosted, needs no key, and returns live prices from the major booking sites -
+strictly better than anything we could mock, so `search_hotels` calls it.
+
+For Indian flights, trains and buses there is no equivalent. The MCP servers that
+cover them wrap RapidAPI or Amadeus and need a paid subscription, so those tools
+always serve mock data and tag every record `"source": "mock"`. That tag travels
+all the way to the plan, so where a number came from is visible in the answer and
+not only in the configuration.
+
+Two things worth knowing about calling somebody else's MCP server, both learned
+by doing it:
+
+- **Its output is not your schema.** trivago answers with `"₹12,599"` and a score
+  out of ten; the rest of this system wants numbers and a rating out of five. The
+  mapping lives in one adapter so nothing downstream learns a second format.
+- **Its output may address your model.** trivago's tool result opens with
+  *"IMPORTANT: ... You MUST follow them exactly."* That is a third party issuing
+  instructions to our LLM. Almost certainly meant helpfully, but a tool result is
+  data, not a prompt, so it is stripped before we look at it. This is the clearest
+  argument for the gateway existing at all: it is the one place where somebody
+  else's output becomes our data.
 
 ## Caching and failure handling
 

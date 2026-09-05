@@ -7,7 +7,7 @@ Run standalone:
 from mcp.server.fastmcp import FastMCP
 
 from app.config import get_settings
-from mcp_servers.hotels import mock_data
+from mcp_servers.hotels import mock_data, provider
 from mcp_servers.validation import validate_count, validate_date
 
 settings = get_settings()
@@ -22,7 +22,7 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def search_hotels(
+async def search_hotels(
     city: str,
     check_in: str,
     check_out: str,
@@ -48,7 +48,11 @@ def search_hotels(
 
     if settings.use_mock_data:
         return mock_data.search_hotels(city, check_in, check_out, guests, budget)
-    raise NotImplementedError("No free hotel API is wired up; run with USE_MOCK_DATA=true.")
+    # trivago's public MCP server: live prices, no API key. See provider.py for
+    # why its output is stripped before we look at it.
+    return await provider.search_hotels(
+        city, check_in, check_out, guests, budget, timeout=settings.hotel_search_timeout_seconds
+    )
 
 
 if __name__ == "__main__":

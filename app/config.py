@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     mcp_gateway_api_key: str = "dev-gateway-key"
     tool_rate_limit_per_minute: int = 60
     mcp_timeout_seconds: float = 10.0
+    # trivago's public server is slower than our own; it needs its own budget.
+    hotel_search_timeout_seconds: float = 45.0
 
     # Data source
     use_mock_data: bool = True
