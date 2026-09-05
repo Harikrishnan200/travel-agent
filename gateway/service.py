@@ -7,6 +7,8 @@ gateway over HTTP or in-process, so the two modes cannot drift.
 
 import time
 from collections import defaultdict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from app import cache, metrics
@@ -30,6 +32,51 @@ class RateLimitExceeded(RuntimeError):
 
 class HumanApprovalRequired(PermissionError):
     """An action tool was called without an approval token."""
+
+
+# Which tools were called during the current request, and whether the cache
+# answered. A context variable for the same reason the LLM one is: the question
+# is "what did this API call do?", and a resumed trip has already done work on
+# an earlier call.
+_tool_usage: ContextVar[list[dict] | None] = ContextVar("tool_usage", default=None)
+
+
+@contextmanager
+def track_tool_usage():
+    """Collect the tool calls made inside this block."""
+    collected: list[dict] = []
+    token = _tool_usage.set(collected)
+    try:
+        yield lambda: list(collected)
+    finally:
+        _tool_usage.reset(token)
+
+
+def record_tool_call(tool: str, cache_hit: bool, status: str = "ok") -> None:
+    """Note one tool call.
+
+    Called from two places: here, when the gateway runs in the same process as
+    the agents, and from app/mcp_client.py when it does not - the gateway is
+    then a different process and can only report back over HTTP.
+    """
+    calls = _tool_usage.get()
+    if calls is not None:
+        calls.append({"tool": tool, "cache_hit": cache_hit, "status": status})
+
+
+def summarize_tool_usage(calls: list[dict]) -> dict | None:
+    """One line about the tools behind a response, for the API to return."""
+    if not calls:
+        return None
+
+    hits = [call for call in calls if call["cache_hit"]]
+    return {
+        "calls": len(calls),
+        "cache_hits": len(hits),
+        "cache_misses": len(calls) - len(hits),
+        "failed": sum(1 for call in calls if call["status"] != "ok"),
+        "tools": sorted({call["tool"] for call in calls}),
+    }
 
 
 # agent -> list of call timestamps in the current window.
@@ -79,6 +126,19 @@ def reset_rate_limits() -> None:
             pass
 
 
+def was_cache_hit(tool: str, arguments: dict[str, Any]) -> bool:
+    """Whether this exact call is already in the cache.
+
+    Used by the HTTP endpoint to tell the caller how their result was produced.
+    The lookup is cheap and the value is about to be fetched anyway.
+    """
+    from gateway.policy import READ_TOOLS
+
+    if tool not in READ_TOOLS:
+        return False
+    return cache.get(cache.make_key(tool, arguments)) is not None
+
+
 def execute_tool(
     agent: str,
     tool: str,
@@ -105,6 +165,7 @@ def execute_tool(
     if key is not None:
         hit = cache.get(key)
         if hit is not None:
+            record_tool_call(tool, cache_hit=True)
             _log(agent, tool, trip_id, started, "ok", cache_hit=True)
             return hit
 
@@ -116,12 +177,14 @@ def execute_tool(
     try:
         result = mcp_router.call_tool(tool, arguments)
     except Exception as exc:
+        record_tool_call(tool, cache_hit=False, status="error")
         _log(agent, tool, trip_id, started, "error", type(exc).__name__)
         raise
 
     if key is not None:
         cache.set(key, result, cache.ttl_for(tool))
 
+    record_tool_call(tool, cache_hit=False)
     _log(agent, tool, trip_id, started, "ok")
     return result
 
@@ -166,5 +229,8 @@ __all__ = [
     "ToolNotAllowedError",
     "describe_tools",
     "execute_tool",
+    "record_tool_call",
     "reset_rate_limits",
+    "summarize_tool_usage",
+    "track_tool_usage",
 ]

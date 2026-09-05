@@ -62,14 +62,20 @@ def _call_over_http(agent: str, tool: str, arguments: dict, trip_id: str | None)
             timeout=settings.mcp_timeout_seconds,
         )
     except httpx.HTTPError as exc:
+        service.record_tool_call(tool, cache_hit=False, status="error")
         raise ToolCallFailed(f"MCP gateway is unreachable: {exc}") from exc
 
     if response.status_code == 403:
         raise ToolNotAllowedError(_detail(response))
     if response.status_code >= 400:
+        service.record_tool_call(tool, cache_hit=False, status="error")
         raise ToolCallFailed(f"gateway returned {response.status_code}: {_detail(response)}")
 
-    return response.json()["result"]
+    body = response.json()
+    # In this mode the gateway is a different process, so its own record of the
+    # call is not ours. It reports the cache hit and we note it here.
+    service.record_tool_call(tool, cache_hit=bool(body.get("cache_hit")))
+    return body["result"]
 
 
 def _detail(response: httpx.Response) -> str:

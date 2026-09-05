@@ -75,6 +75,9 @@ def list_tools(agent: str = Depends(identify_agent)) -> dict:
 @app.post("/call", dependencies=[Depends(authenticate)])
 def call_tool(request: ToolCallRequest, agent: str = Depends(identify_agent)) -> dict:
     """Execute one tool call. Every failure maps to a status code the caller can act on."""
+    # Checked before the call, because afterwards it is always in the cache.
+    cache_hit = service.was_cache_hit(request.tool, request.arguments)
+
     try:
         result = service.execute_tool(
             agent=agent,
@@ -98,4 +101,6 @@ def call_tool(request: ToolCallRequest, agent: str = Depends(identify_agent)) ->
         # The tool ran and rejected the arguments: the caller's fault, not an outage.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {"tool": request.tool, "result": result}
+    # The caller is in another process and cannot see the gateway's own cache,
+    # so it is told here.
+    return {"tool": request.tool, "result": result, "cache_hit": cache_hit}

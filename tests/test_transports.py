@@ -152,3 +152,25 @@ def test_a_result_that_only_has_content_blocks_is_parsed():
 
 def test_an_empty_result_is_passed_through():
     assert mcp_router._unwrap([]) == []
+
+
+def test_the_gateway_reports_whether_the_cache_answered(split_processes):
+    """In split mode the gateway is another process, so it has to say."""
+    from gateway import service
+
+    with patch.object(httpx, "post", return_value=response(200, {"result": [], "cache_hit": True})):
+        with service.track_tool_usage() as usage:
+            mcp_client.call_tool("transport_agent", "search_flights", FLIGHT_ARGS)
+
+    assert service.summarize_tool_usage(usage())["cache_hits"] == 1
+
+
+def test_a_gateway_failure_is_counted(split_processes):
+    from gateway import service
+
+    with patch.object(httpx, "post", side_effect=httpx.ConnectError("refused")):
+        with service.track_tool_usage() as usage:
+            with pytest.raises(ToolCallFailed):
+                mcp_client.call_tool("transport_agent", "search_flights", FLIGHT_ARGS)
+
+    assert service.summarize_tool_usage(usage())["failed"] == 1

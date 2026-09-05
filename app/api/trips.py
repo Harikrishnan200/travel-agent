@@ -18,6 +18,7 @@ from app.graph.graph import build_graph
 from app.graph.state import new_state
 from app.llm.client import summarize_usage, track_usage
 from app.logging_setup import get_logger, log_context
+from gateway.service import summarize_tool_usage, track_tool_usage
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/trips", tags=["trips"])
@@ -56,10 +57,11 @@ class TripResponse(BaseModel):
     # Present while the workflow is paused for the traveller.
     awaiting_decision: dict | None = None
 
-    # How long this request took, and which LLM answered it. Null for a request
-    # that needed no LLM - a cached read, or a run with no provider configured.
+    # How long this request took, which LLM answered it, and how much of the
+    # work the cache did. Each is null when nothing of that kind happened.
     duration_ms: float | None = None
     llm: dict | None = None
+    tools: dict | None = None
 
 
 class ApproveRequest(BaseModel):
@@ -106,6 +108,7 @@ def _to_response(
     decision: dict | None = None,
     duration_ms: float | None = None,
     llm: dict | None = None,
+    tools: dict | None = None,
 ) -> TripResponse:
     return TripResponse(
         trip_id=trip_id,
@@ -118,6 +121,7 @@ def _to_response(
         awaiting_decision=decision,
         duration_ms=duration_ms,
         llm=llm,
+        tools=tools,
     )
 
 
@@ -157,7 +161,11 @@ def _resume(trip_id: str, decision: dict, event: str) -> TripResponse:
         )
 
     started = time.monotonic()
-    with log_context(trip_id=trip_id), track_usage() as llm_usage:
+    with (
+        log_context(trip_id=trip_id),
+        track_usage() as llm_usage,
+        track_tool_usage() as tool_usage,
+    ):
         database.record_event(trip_id, event, decision)
         logger.info("human_decision", action=decision["action"])
 
@@ -166,9 +174,14 @@ def _resume(trip_id: str, decision: dict, event: str) -> TripResponse:
         plan = _plan_of(state)
         database.save_trip(trip_id, state, plan)
         llm = summarize_usage(llm_usage())
-        database.record_event(trip_id, "workflow_continued", {"status": state.get("status")})
-        logger.info("workflow_continued", status=state.get("status"), llm=llm)
-        return _to_response(trip_id, state, _pending_decision(trip_id), _elapsed_ms(started), llm)
+        tools = summarize_tool_usage(tool_usage())
+        database.record_event(
+            trip_id, "workflow_continued", {"status": state.get("status"), "tools": tools}
+        )
+        logger.info("workflow_continued", status=state.get("status"), llm=llm, tools=tools)
+        return _to_response(
+            trip_id, state, _pending_decision(trip_id), _elapsed_ms(started), llm, tools
+        )
 
 
 @router.post("", response_model=TripResponse, status_code=201)
@@ -180,7 +193,11 @@ def create_trip(request: CreateTripRequest) -> TripResponse:
     # The row goes in before anything else, so a trip that fails mid-plan still
     # leaves a record, and so its events have something to hang off.
     started = time.monotonic()
-    with log_context(trip_id=trip_id), track_usage() as llm_usage:
+    with (
+        log_context(trip_id=trip_id),
+        track_usage() as llm_usage,
+        track_tool_usage() as tool_usage,
+    ):
         initial = new_state(trip_id, request.message)
         database.save_trip(trip_id, initial)
         database.record_event(trip_id, "trip_requested", {"message": request.message})
@@ -191,15 +208,18 @@ def create_trip(request: CreateTripRequest) -> TripResponse:
         plan = _plan_of(state)
         database.save_trip(trip_id, state, plan)
         llm = summarize_usage(llm_usage())
+        tools = summarize_tool_usage(tool_usage())
         outcome = {
             "status": state.get("status"),
             "total_cost": state.get("total_cost"),
             "replan_attempts": state.get("replan_attempts"),
             "validation_errors": state.get("validation_errors"),
         }
-        database.record_event(trip_id, "planning_finished", {**outcome, "llm": llm})
-        logger.info("planning_finished", **outcome, llm=llm)
-        return _to_response(trip_id, state, _pending_decision(trip_id), _elapsed_ms(started), llm)
+        database.record_event(trip_id, "planning_finished", {**outcome, "llm": llm, "tools": tools})
+        logger.info("planning_finished", **outcome, llm=llm, tools=tools)
+        return _to_response(
+            trip_id, state, _pending_decision(trip_id), _elapsed_ms(started), llm, tools
+        )
 
 
 @router.post("/{trip_id}/approve", response_model=TripResponse)

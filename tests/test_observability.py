@@ -368,3 +368,71 @@ def test_usage_from_one_request_does_not_leak_into_the_next(client, monkeypatch)
 
     # A plain read needs no LLM, so it must report none.
     assert client.get(f"/api/v1/trips/{trip_id}").json()["llm"] is None
+
+
+# --- what the cache did -----------------------------------------------------
+
+
+def test_a_cold_request_reports_only_misses(client):
+    created = client.post(
+        "/api/v1/trips", json={"message": "Plan a 5 day trip from Kochi to Delhi for 2"}
+    ).json()
+
+    assert created["tools"]["calls"] > 0
+    assert created["tools"]["cache_hits"] == 0
+    assert created["tools"]["cache_misses"] == created["tools"]["calls"]
+
+
+def test_an_identical_request_reports_only_hits(client):
+    """The question this was added to answer: is the cache doing anything?"""
+    message = {"message": "Plan a 5 day trip from Kochi to Delhi for 2"}
+    client.post("/api/v1/trips", json=message)
+
+    warm = client.post("/api/v1/trips", json=message).json()
+
+    assert warm["tools"]["cache_hits"] == warm["tools"]["calls"]
+    assert warm["tools"]["cache_misses"] == 0
+
+
+def test_the_tools_used_are_named(client):
+    created = client.post(
+        "/api/v1/trips", json={"message": "Plan a 5 day trip from Kochi to Delhi for 2"}
+    ).json()
+
+    assert "search_flights" in created["tools"]["tools"]
+    assert "get_weather" in created["tools"]["tools"]
+
+
+def test_a_failed_tool_call_is_counted_as_failed(client):
+    from unittest.mock import patch
+
+    from gateway import mcp_router
+
+    working = mcp_router.call_tool
+
+    def trains_down(tool, arguments):
+        if tool == "search_trains":
+            raise mcp_router.MCPUnavailableError("down")
+        return working(tool, arguments)
+
+    with patch.object(mcp_router, "call_tool", trains_down):
+        created = client.post(
+            "/api/v1/trips", json={"message": "Plan a 5 day trip from Kochi to Delhi for 2"}
+        ).json()
+
+    assert created["tools"]["failed"] >= 1
+
+
+def test_a_request_that_calls_no_tools_reports_none(client):
+    """An off-topic message is refused before any agent runs."""
+    refused = client.post("/api/v1/trips", json={"message": "Tell me a joke"}).json()
+    assert refused["tools"] is None
+
+
+def test_tool_usage_does_not_leak_between_requests(client):
+    message = {"message": "Plan a 5 day trip from Kochi to Delhi for 2"}
+    first = client.post("/api/v1/trips", json=message).json()
+    second = client.post("/api/v1/trips", json=message).json()
+
+    # Same work each time, counted per request rather than accumulated.
+    assert first["tools"]["calls"] == second["tools"]["calls"]
