@@ -14,8 +14,23 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from app import cache
 from app.api import trips
+from app.config import get_settings
 from app.db import database
 from gateway import service
+
+
+@pytest.fixture(autouse=True)
+def no_llm_calls(monkeypatch):
+    """No test may call a real LLM.
+
+    With a key in .env the suite would otherwise make live API calls: slow,
+    costly, and dependent on someone else's uptime. Clearing the keys makes
+    call_llm raise LLMUnavailable immediately, which is the path the tests
+    assert anyway. tests/test_llm_fallback.py sets its own fake keys.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "groq_api_key", "")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
 
 
 @pytest.fixture(autouse=True)

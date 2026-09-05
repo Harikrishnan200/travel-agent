@@ -16,7 +16,8 @@ class Settings(BaseSettings):
     fallback_llm_provider: str = "gemini"
     groq_api_key: str = ""
     gemini_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    # Groq retired the Llama 3.3 models; check /models on your account if this 404s.
+    groq_model: str = "openai/gpt-oss-120b"
     gemini_model: str = "gemini-2.0-flash"
     llm_timeout_seconds: float = 30.0
 

@@ -23,6 +23,33 @@ logger = logging.getLogger(__name__)
 VALID_INTERESTS = {"historical", "nature", "food", "culture", "adventure", "shopping"}
 VALID_MODES = {"flight", "train", "bus"}
 
+# What a model or a traveller might say, mapped to the mode we use internally.
+# Without this a reply of "trains" would silently drop the stated preference.
+MODE_SYNONYMS = {
+    "train": "train",
+    "trains": "train",
+    "rail": "train",
+    "railway": "train",
+    "flight": "flight",
+    "flights": "flight",
+    "plane": "flight",
+    "air": "flight",
+    "airplane": "flight",
+    "fly": "flight",
+    "bus": "bus",
+    "buses": "bus",
+    "coach": "bus",
+}
+
+
+def normalize_mode(mode: str | None) -> str | None:
+    """Map a stated transport mode onto one we understand, or drop it."""
+    if not mode:
+        return None
+    cleaned = mode.strip().lower().removeprefix("by ").strip()
+    return MODE_SYNONYMS.get(cleaned)
+
+
 # How far ahead to plan when the traveller gives no dates.
 DEFAULT_LEAD_DAYS = 14
 DEFAULT_DURATION_DAYS = 5
@@ -81,8 +108,9 @@ def to_state(extracted: ExtractedRequest) -> dict:
     )
 
     preferences = {}
-    if extracted.transport_mode in VALID_MODES:
-        preferences["transport_mode"] = extracted.transport_mode
+    mode = normalize_mode(extracted.transport_mode)
+    if mode:
+        preferences["transport_mode"] = mode
     if extracted.max_journey_hours:
         preferences["max_journey_hours"] = extracted.max_journey_hours
 

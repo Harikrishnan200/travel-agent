@@ -174,6 +174,16 @@ blocks anything resembling a credential.
 primary (Groq) --fails--> fallback (Gemini) --fails--> rule-based reading
 ```
 
+> **Picking a model.** Groq retires models periodically, and the default here
+> (`openai/gpt-oss-120b`) may not be on your account. If a call 404s with
+> `model_not_found`, list what you have and set `GROQ_MODEL` to one of them:
+>
+> ```python
+> from groq import Groq; print([m.id for m in Groq(api_key="...").models.list().data])
+> ```
+>
+> Put real keys in `.env`, never in `.env.example` - that file is committed.
+
 One retry on the primary covers a transient blip; after that the fallback gets
 one attempt. A reply that does not match the Pydantic schema counts as a
 failure, so a malformed answer falls back too rather than being half-trusted.
