@@ -257,14 +257,22 @@ is always labelled; it never passes for a normal one.
 Every payload carries a `source` field, so where a result came from is visible in
 the data and not only in the configuration.
 
-| Domain | Mock | Real, with `USE_MOCK_DATA=false` |
-|---|---|---|
-| Hotels | rating-correlated pricing | **trivago's public MCP server** - live prices, no key |
-| Weather | seasonal, deterministic | Open-Meteo - free, no key |
-| Routes | distance x road factor | OSRM - free, no key |
-| Flights | derived from real distances | **AviationStack** - real airlines, flight numbers and timetables (free key) |
-| Places | curated + generated | catalogue is ours; **Tavily** adds a real description and a source link (free key) |
-| Trains, buses | derived from real distances | *mock only* - no free API exists |
+One switch decides it. `USE_MOCK_DATA=true` (the default) means **everything is
+mock and nothing leaves the machine**. `false` means each tool uses the best
+provider available to it, and falls back to mock where none exists.
+
+| Tool | `USE_MOCK_DATA=true` | `USE_MOCK_DATA=false` | Needs a key |
+|---|---|---|---|
+| `search_hotels` | mock | **trivago public MCP server** - live prices | no |
+| `get_weather` | mock | **Open-Meteo** | no |
+| `calculate_route` | mock | **OSRM** | no |
+| `search_flights` | mock | **AviationStack** - real airlines, numbers, timetables; fare estimated | yes, free |
+| `search_places` | mock | mock catalogue + **Tavily** description and source link | yes, free |
+| `search_trains` | mock | mock | - |
+| `search_buses` | mock | mock | - |
+
+Whatever the setting, every record carries `source`, so what you actually got is
+visible in the data rather than inferred from the configuration.
 
 ### Why some domains are still ours
 

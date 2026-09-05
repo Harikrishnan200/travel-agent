@@ -22,12 +22,12 @@ configure_logging()
 settings = get_settings()
 
 # Trains and buses have no free API: every MCP server covering Indian rail or
-# road sits behind a paid RapidAPI subscription. Those two tools always serve
-# mock data, tagged "source": "mock" so it is visible in the record itself.
+# road sits behind a paid RapidAPI subscription. Those two tools serve mock data
+# whatever the configuration, tagged "source": "mock" in the record itself.
 #
 # Flights are different. AviationStack's free plan gives real airlines, flight
-# numbers and timetables - but no fares - so search_flights uses it when a key
-# is configured and estimates the price, saying so in every record.
+# numbers and timetables - but no fares - so search_flights uses it when real
+# data is asked for and a key is present, estimating the price and saying so.
 
 mcp = FastMCP(
     "transport",
@@ -53,7 +53,7 @@ def search_flights(origin: str, destination: str, date: str, passengers: int = 1
     validate_date(date)
     validate_count(passengers, "passengers")
 
-    if settings.aviation_stack_api_key:
+    if not settings.use_mock_data and settings.aviation_stack_api_key:
         try:
             flights = provider.search_flights(
                 origin,
@@ -89,7 +89,7 @@ def search_trains(origin: str, destination: str, date: str, passengers: int = 1)
     validate_date(date)
     validate_count(passengers, "passengers")
 
-    # Always mock: see MOCK_ONLY above.
+    # No free provider exists for Indian rail; see the note at the top.
     return mock_data.search_trains(origin, destination, date, passengers)
 
 
@@ -108,7 +108,7 @@ def search_buses(origin: str, destination: str, date: str, passengers: int = 1) 
     validate_date(date)
     validate_count(passengers, "passengers")
 
-    # Always mock: see MOCK_ONLY above.
+    # No free provider exists for buses; see the note at the top.
     return mock_data.search_buses(origin, destination, date, passengers)
 
 

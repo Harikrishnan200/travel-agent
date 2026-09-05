@@ -51,9 +51,10 @@ def search_places(city: str, category: str | None = None, max_results: int = 10)
     # The catalogue is ours: see PLACES_ARE_MOCK_ONLY above.
     places = mock_data.search_places(city, category, max_results)
 
-    # With a Tavily key, describe the first few from real web sources. Prices and
-    # durations stay ours - only the prose comes from outside.
-    if settings.tavily_api_key and places:
+    # When real data is asked for and a Tavily key is present, describe the first
+    # few from real web sources. Prices and durations stay ours - only the prose
+    # comes from outside.
+    if not settings.use_mock_data and settings.tavily_api_key and places:
         places = provider.describe_places(places, city, settings.tavily_api_key)
     return places
 
