@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 13 of 17.** Evaluation dataset and runner.
+> **Status: Phase 14 of 17.** Full test suite, 378 tests at 94% coverage.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,23 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## Tests
+
+```bash
+pytest -q                 # 378 tests, ~2 seconds
+pytest -q --cov           # with coverage; fails under 88%
+```
+
+The suite never touches real infrastructure: a fake Redis, an in-memory
+checkpointer, no database and no LLM, all wired up in `tests/conftest.py`. It
+therefore runs anywhere, and cannot be slowed down or broken by somebody else's
+uptime. `tests/test_persistence.py` opts back in to a real Postgres and skips
+itself when there is not one.
+
+The coverage floor is there so a change that quietly stops exercising a whole
+path fails CI rather than merging. The uncovered remainder is mostly the inside
+of third-party network calls, whose parsing is tested against captured payloads.
 
 ## Evaluation
 

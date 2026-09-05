@@ -79,3 +79,93 @@ def test_the_real_route_returns_the_same_shape_as_the_mock():
 
 def test_unknown_weather_codes_do_not_crash():
     assert weather_provider.describe_code(999) == "unknown"
+
+
+# --- the HTTP calls themselves ----------------------------------------------
+# The parsing above is tested against captured payloads; these check the request
+# we build and that a failure surfaces rather than being swallowed.
+
+
+def tomorrow() -> str:
+    """Open-Meteo only forecasts forward, so tests must ask about a future day."""
+    from datetime import date, timedelta
+
+    return (date.today() + timedelta(days=1)).isoformat()
+
+
+def test_the_weather_request_asks_for_the_right_city_and_day(monkeypatch):
+    captured = {}
+    day = tomorrow()
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"daily": {**OPEN_METEO_RESPONSE["daily"], "time": [day, "unused"]}}
+
+    def fake_get(url, params=None, timeout=None):
+        captured.update(url=url, params=params, timeout=timeout)
+        return FakeResponse()
+
+    monkeypatch.setattr(weather_provider.httpx, "get", fake_get)
+
+    forecast = weather_provider.get_weather("Delhi", day)
+
+    assert captured["params"]["start_date"] == day
+    assert captured["params"]["latitude"] == pytest.approx(28.7041)
+    assert forecast["city"] == "Delhi"
+    assert forecast["source"] == "open-meteo"
+
+
+def test_a_weather_outage_is_raised_not_swallowed(monkeypatch):
+    """The Experience Agent decides how to degrade; the provider must not decide for it."""
+
+    def fake_get(*args, **kwargs):
+        raise ConnectionError("open-meteo unreachable")
+
+    monkeypatch.setattr(weather_provider.httpx, "get", fake_get)
+
+    with pytest.raises(ConnectionError):
+        weather_provider.get_weather("Delhi", tomorrow())
+
+
+def test_a_date_in_the_past_is_refused():
+    """Open-Meteo forecasts forward only; asking backwards would silently mislead."""
+    with pytest.raises(ValueError, match="outside that window"):
+        weather_provider.get_weather("Delhi", "2020-01-01")
+
+
+def test_the_route_request_sends_longitude_before_latitude(monkeypatch):
+    """OSRM takes lon,lat - the other way round from everything else here."""
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return OSRM_RESPONSE
+
+    def fake_get(url, params=None, timeout=None):
+        captured["url"] = url
+        return FakeResponse()
+
+    monkeypatch.setattr(route_provider.httpx, "get", fake_get)
+
+    route = route_provider.calculate_route("Delhi", "Agra")
+
+    assert "77.1025,28.7041;78.0081,27.1767" in captured["url"]
+    assert route["distance_km"] == 219.5
+
+
+def test_an_unknown_city_never_reaches_the_network(monkeypatch):
+    def explode(*args, **kwargs):
+        raise AssertionError("should not have called out")
+
+    monkeypatch.setattr(route_provider.httpx, "get", explode)
+
+    from mcp_servers.cities import UnknownCityError
+
+    with pytest.raises(UnknownCityError):
+        route_provider.calculate_route("Atlantis", "Agra")

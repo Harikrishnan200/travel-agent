@@ -131,3 +131,57 @@ async def test_an_unknown_city_is_refused_before_any_network_call():
 
     with pytest.raises(UnknownCityError):
         await provider.search_hotels("Atlantis", "2026-09-19", "2026-09-23", 2)
+
+
+# --- the MCP call itself ----------------------------------------------------
+
+
+async def test_the_search_sends_what_trivago_expects(monkeypatch):
+    """Rooms, currency and country are ours to decide, not theirs to guess."""
+    captured = {}
+
+    async def fake_search(city, check_in, check_out, guests, timeout):
+        captured.update(city=city, guests=guests)
+        return provider.parse_response(TRIVAGO_RESPONSE)
+
+    monkeypatch.setattr(provider, "_search", fake_search)
+    hotels = await provider.search_hotels("Delhi", "2026-09-19", "2026-09-23", 4)
+
+    assert captured == {"city": "Delhi", "guests": 4}
+    assert hotels
+    assert all(hotel["rooms_required"] == 2 for hotel in hotels)
+
+
+async def test_results_are_ordered_by_rating_then_price(monkeypatch):
+    async def fake_search(*args, **kwargs):
+        return provider.parse_response(TRIVAGO_RESPONSE)
+
+    monkeypatch.setattr(provider, "_search", fake_search)
+    hotels = await provider.search_hotels("Delhi", "2026-09-19", "2026-09-23", 2)
+
+    assert [hotel["rating"] for hotel in hotels] == sorted(
+        (hotel["rating"] for hotel in hotels), reverse=True
+    )
+
+
+async def test_a_budget_filters_the_results(monkeypatch):
+    async def fake_search(*args, **kwargs):
+        return provider.parse_response(TRIVAGO_RESPONSE)
+
+    monkeypatch.setattr(provider, "_search", fake_search)
+    hotels = await provider.search_hotels("Delhi", "2026-09-19", "2026-09-23", 2, budget=10000)
+
+    assert hotels
+    assert all(hotel["total_price"] <= 10000 for hotel in hotels)
+
+
+async def test_a_provider_outage_is_raised_never_replaced_with_mock_data(monkeypatch):
+    """Silently serving invented data where real data was asked for is the worst option."""
+
+    async def fake_search(*args, **kwargs):
+        raise ConnectionError("trivago unreachable")
+
+    monkeypatch.setattr(provider, "_search", fake_search)
+
+    with pytest.raises(provider.HotelProviderError, match="trivago hotel search failed"):
+        await provider.search_hotels("Delhi", "2026-09-19", "2026-09-23", 2)

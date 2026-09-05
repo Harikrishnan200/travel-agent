@@ -12,3 +12,19 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
 ]
+
+[tool.coverage.run]
+source = ["app", "gateway", "mcp_servers"]
+omit = ["*/__init__.py"]
+
+[tool.coverage.report]
+# Not a target to game: it is a floor, so a change that quietly stops
+# exercising a whole path fails CI instead of merging.
+fail_under = 88
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]

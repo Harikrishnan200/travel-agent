@@ -64,7 +64,15 @@ def session_scope() -> Iterator[Session | None]:
         yield None
         return
 
-    session = _session_factory()
+    try:
+        session = _session_factory()
+    except Exception as exc:
+        # Opening a session can fail too - an exhausted pool, a dropped
+        # connection - and that must degrade like any other database problem.
+        logger.warning("could not open a database session: %s", exc)
+        yield None
+        return
+
     try:
         yield session
         session.commit()

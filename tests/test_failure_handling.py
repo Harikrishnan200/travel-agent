@@ -154,3 +154,58 @@ def test_rate_limiting_still_applies_with_no_redis(no_redis, monkeypatch):
 def test_cache_reads_and_writes_are_safe_with_no_redis(no_redis):
     cache.set("tool:whatever", {"a": 1}, 60)
     assert cache.get("tool:whatever") is None
+
+
+# --- Redis and Postgres error paths -----------------------------------------
+# These matter because both are meant to degrade rather than fail. A helper that
+# raised instead of returning would take the whole plan down with it.
+
+
+def test_a_redis_read_that_raises_is_treated_as_a_miss(isolated_infrastructure):
+    isolated_infrastructure.get = lambda *args: (_ for _ in ()).throw(ConnectionError("gone"))
+    assert cache.get("tool:anything") is None
+
+
+def test_a_redis_write_that_raises_does_not_propagate(isolated_infrastructure):
+    isolated_infrastructure.setex = lambda *args: (_ for _ in ()).throw(ConnectionError("gone"))
+    cache.set("tool:anything", {"a": 1}, 60)  # must not raise
+
+
+def test_a_rate_limit_check_that_raises_falls_back(isolated_infrastructure):
+    isolated_infrastructure.pipeline = lambda: (_ for _ in ()).throw(ConnectionError("gone"))
+    assert cache.increment_window("ratelimit:x", 60) is None
+
+
+def test_an_unreachable_redis_is_only_reported_once(monkeypatch):
+    """Retrying a dead Redis on every call would slow every plan down."""
+    import redis as redis_module
+
+    attempts = []
+
+    def refuse(*args, **kwargs):
+        attempts.append(1)
+        raise ConnectionError("refused")
+
+    cache.set_client(None)
+    cache._unavailable = False
+    cache._client = None
+    monkeypatch.setattr(redis_module.Redis, "from_url", refuse)
+
+    assert cache.get_client() is None
+    assert cache.get_client() is None
+    assert len(attempts) == 1
+
+
+def test_a_database_write_failure_does_not_stop_planning():
+    """Postgres is where a trip is remembered, not where it is planned."""
+    from unittest.mock import patch
+
+    from app.db import database
+
+    def no_pool():
+        raise RuntimeError("connection pool exhausted")
+
+    with patch.object(database, "get_engine", return_value=object()):
+        with patch.object(database, "_session_factory", no_pool):
+            database.save_trip("t", {"user_request": "x", "status": "planning"})
+            assert database.get_trip("t") is None
