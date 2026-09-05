@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 7 of 17.** LLM request extraction with a fallback provider.
+> **Status: Phase 8 of 17.** Input and output guardrails, deterministic validation.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,34 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## Guardrails and validation
+
+The dividing line the whole project is built on:
+
+| The LLM | Python |
+|---|---|
+| reads the traveller's message | computes every date |
+| writes the itinerary's prose | computes every rupee |
+| explains a recommendation | decides whether a plan is valid |
+
+**Input** ([app/guardrails/input_guard.py](app/guardrails/input_guard.py)) runs in
+two places: `check_message` screens the raw text before it reaches a model
+(empty, over-long, prompt injection); `check_requirements` checks the extracted
+fields (missing city, origin equal to destination, impossible duration or
+traveller count, nonsensical budget, broken date range).
+
+Injection filtering is a speed bump, not a wall. The real defences are the
+restricted tool access and the validation that follow it.
+
+**Plan validation** ([app/validation/validators.py](app/validation/validators.py))
+is six plain functions - dates, transport, hotel, itinerary, daily schedule,
+budget - each returning a list of readable errors. No LLM is consulted.
+
+**Output** ([app/guardrails/output_guard.py](app/guardrails/output_guard.py))
+re-derives the totals rather than trusting the ones in the state, so a number
+that drifted during re-planning is caught before the traveller sees it. It also
+blocks anything resembling a credential.
 
 ## LLM fallback
 

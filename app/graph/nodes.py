@@ -12,15 +12,21 @@ Nodes still carrying a stub note name the phase that finishes them.
 import logging
 from datetime import date, timedelta
 
+from pydantic import BaseModel
+
 from app.agents import travel_manager
 from app.agents.accommodation_agent import research_accommodation as accommodation_agent
 from app.agents.experience_agent import research_experience as experience_agent
 from app.agents.transport_agent import research_transport as transport_agent
 from app.config import get_settings
 from app.graph import extraction
+from app.graph.prompts import DESCRIBE_ITINERARY_SYSTEM, DESCRIBE_ITINERARY_USER
 from app.graph.state import TravelState
-from app.llm.client import LLMUnavailable
+from app.guardrails import output_guard as output_rules
+from app.guardrails.input_guard import InputRejected, check_message, check_requirements
+from app.llm.client import LLMUnavailable, call_llm
 from app.tools import get_tools
+from app.validation import validators
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -48,6 +54,12 @@ def parse_request(state: TravelState) -> dict:
     message = state.get("user_request", "")
     degraded = list(state.get("degraded", []))
 
+    # Screen the raw text before it reaches a model at all.
+    try:
+        check_message(message)
+    except InputRejected as rejection:
+        return {"status": "invalid_request", "validation_errors": [rejection.reply]}
+
     try:
         extracted, result = extraction.extract_with_llm(message)
         if result.fallback_used:
@@ -73,32 +85,13 @@ def parse_request(state: TravelState) -> dict:
 
 
 def validate_request(state: TravelState) -> dict:
-    """Input guardrail: can we actually plan this? Phase 8 moves the rules into guardrails/."""
-    # parse_request may already have rejected the message as not being about
-    # travel. Re-checking here would bury that answer under field-level noise.
+    """Input guardrail on the extracted requirements."""
+    # parse_request may already have rejected the message. Re-checking here would
+    # bury that answer under field-level noise.
     if state.get("status") == "invalid_request":
         return {}
 
-    errors: list[str] = []
-
-    if not state.get("origin"):
-        errors.append("I could not tell which city you are travelling from.")
-    if not state.get("destination"):
-        errors.append("I could not tell which city you are travelling to.")
-
-    duration = state.get("duration_days") or 0
-    if not 1 <= duration <= settings.max_trip_days:
-        errors.append(f"Trip length must be between 1 and {settings.max_trip_days} days.")
-
-    travelers = state.get("travelers") or 0
-    if not 1 <= travelers <= settings.max_travelers:
-        errors.append(f"Traveller count must be between 1 and {settings.max_travelers}.")
-
-    # A budget is optional: without one we still plan and report the cost.
-    budget = state.get("budget")
-    if budget is not None and budget <= 0:
-        errors.append("Budget must be a positive amount.")
-
+    errors = check_requirements(state)
     if errors:
         return {"status": "invalid_request", "validation_errors": errors}
     return {"status": "planning", "validation_errors": []}
@@ -203,7 +196,71 @@ def create_itinerary(state: TravelState) -> dict:
 
         days.append(day)
 
-    return {"itinerary": {"days": days}}
+    # The LLM writes the prose; every date and cost above was computed in Python.
+    overview, degraded = _describe_itinerary(state, days)
+
+    return {
+        "itinerary": {"days": days, "overview": overview},
+        "degraded": _merge_degraded(state, degraded),
+    }
+
+
+def _merge_degraded(state: TravelState, notes: list[str]) -> list[str]:
+    """Add notes without repeating ones already recorded."""
+    existing = list(state.get("degraded", []))
+    return existing + [note for note in notes if note not in existing]
+
+
+class DayDescription(BaseModel):
+    day: int
+    summary: str
+
+
+class ItineraryDescription(BaseModel):
+    overview: str
+    days: list[DayDescription]
+
+
+def _describe_itinerary(state: TravelState, days: list[dict]) -> tuple[str, list[str]]:
+    """Ask the LLM to narrate the plan. Returns (overview, degraded notes).
+
+    The model is given the finished days and may only describe them. Anything it
+    says about a day we did not plan, or a day count that does not match, is
+    discarded - it writes prose, it does not get a vote on the plan.
+    """
+    listing = "\n".join(
+        f"Day {day['day']} ({day['date']}): " + (", ".join(day["activities"]) or "no fixed plans")
+        for day in days
+    )
+    try:
+        described, result = call_llm(
+            DESCRIBE_ITINERARY_SYSTEM,
+            DESCRIBE_ITINERARY_USER.format(
+                origin=state.get("origin"),
+                destination=state.get("destination"),
+                duration=state.get("duration_days"),
+                travelers=state.get("travelers"),
+                interests=", ".join(state.get("interests") or []) or "no particular preference",
+                days=listing,
+            ),
+            ItineraryDescription,
+        )
+    except LLMUnavailable:
+        return "", ["no LLM available, the itinerary has no written summary"]
+
+    by_day = {entry.day: entry.summary for entry in described.days}
+    for day in days:
+        summary = by_day.get(day["day"])
+        if summary:
+            day["summary"] = summary
+
+    degraded = []
+    if result.fallback_used:
+        degraded.append(f"primary LLM unavailable, used {result.provider}")
+    if set(by_day) != {day["day"] for day in days}:
+        degraded.append("the written summary did not cover every day")
+
+    return described.overview, degraded
 
 
 def _weather_note(weather: dict | None, activities: list[dict]) -> str:
@@ -247,29 +304,9 @@ def compute_costs(state: TravelState) -> dict:
 
 
 def validate_plan(state: TravelState) -> dict:
-    """Deterministic validation. Phase 8 moves the rules into validation/."""
+    """Deterministic validation. Every rule lives in app/validation/validators.py."""
     costs = compute_costs(state)
-    errors: list[str] = []
-
-    # A plan missing a leg is not a cheap plan, it is an incomplete one. Without
-    # this check an outage produces a plausible-looking itinerary with no way to
-    # get there and a total that quietly omits the cost.
-    if not state.get("selected_transport"):
-        errors.append(
-            f"No transport was found from {state.get('origin')} to " f"{state.get('destination')}."
-        )
-    if not state.get("selected_hotel"):
-        errors.append(f"No accommodation was found in {state.get('destination')}.")
-
-    days = state.get("itinerary", {}).get("days", [])
-    if len(days) != state.get("duration_days", 0):
-        errors.append(f"Itinerary has {len(days)} days, expected {state.get('duration_days')}.")
-
-    budget = state.get("budget")
-    if budget is not None and costs["total_cost"] > budget:
-        over = costs["total_cost"] - budget
-        errors.append(f"Budget exceeded by Rs {over:,.0f}.")
-
+    errors = validators.validate_plan(state, costs["total_cost"])
     return {**costs, "validation_errors": errors}
 
 
@@ -346,12 +383,12 @@ def finalize(state: TravelState) -> dict:
 def output_guard(state: TravelState) -> dict:
     """Last deterministic check before the response leaves the system.
 
-    Phase 8 replaces this with the real output guardrail.
+    The numbers are re-derived rather than trusted, so a total that drifted
+    during re-planning is caught here rather than shown to the traveller.
     """
     recomputed = compute_costs(state)
-    if abs(recomputed["total_cost"] - state.get("total_cost", 0)) > 0.01:
-        return {
-            "status": "failed",
-            "validation_errors": ["Final cost did not match the recomputed total."],
-        }
+    errors = output_rules.check_plan(state, recomputed["total_cost"])
+    if errors:
+        logger.error("output guard rejected the plan: %s", errors)
+        return {"status": "failed", "validation_errors": errors}
     return {}

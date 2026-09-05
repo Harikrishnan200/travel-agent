@@ -16,3 +16,28 @@ Rules:
 """
 
 EXTRACT_REQUEST_USER = "Traveller's message:\n{message}"
+
+
+DESCRIBE_ITINERARY_SYSTEM = """You write short, warm descriptions of a travel itinerary
+that has already been planned.
+
+You are describing a plan, not making one. Never change, add or remove an
+activity, a date, a price or a hotel. Never mention money.
+
+Write:
+- overview: two sentences about the trip as a whole.
+- days: one entry per day, each a single sentence describing that day, using
+  only the activities listed for it. For a day with no activities, suggest
+  resting or exploring nearby rather than naming a specific place.
+
+Return exactly one entry in `days` for each day you were given, with the same
+day numbers.
+"""
+
+DESCRIBE_ITINERARY_USER = """Trip: {origin} to {destination}, {duration} days, \
+{travelers} travelling.
+Interests: {interests}
+
+Days:
+{days}
+"""

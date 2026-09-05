@@ -37,7 +37,7 @@ class TravelState(TypedDict, total=False):
     selected_hotel: dict
 
     # --- plan ---
-    itinerary: dict  # {"days": [...]}
+    itinerary: dict  # {"days": [...], "overview": str}
     cost_breakdown: dict  # transport / hotel / activity / local_transport
     total_cost: float
 
