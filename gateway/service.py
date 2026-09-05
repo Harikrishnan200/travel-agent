@@ -5,13 +5,13 @@ logic in a plain function means the same checks run whether the agents call the
 gateway over HTTP or in-process, so the two modes cannot drift.
 """
 
-import logging
 import time
 from collections import defaultdict
 from typing import Any
 
-from app import cache
+from app import cache, metrics
 from app.config import get_settings
+from app.logging_setup import get_logger
 from gateway import mcp_router
 from gateway.policy import (
     READ_TOOLS,
@@ -20,7 +20,7 @@ from gateway.policy import (
     requires_human_approval,
 )
 
-logger = logging.getLogger("gateway")
+logger = get_logger("gateway")
 settings = get_settings()
 
 
@@ -127,17 +127,18 @@ def execute_tool(
 
 
 def _log(agent, tool, trip_id, started, status, error=None, cache_hit=False):
-    """One structured line per tool call. Phase 12 swaps this for structlog."""
+    """One structured line and one metric per tool call."""
     duration_ms = (time.monotonic() - started) * 1000
+    metrics.tool_calls.labels(tool=tool, status=status, cache_hit=str(cache_hit).lower()).inc()
     logger.info(
-        "tool_call agent=%s tool=%s trip=%s duration_ms=%.1f status=%s cache_hit=%s%s",
-        agent,
-        tool,
-        trip_id or "-",
-        duration_ms,
-        status,
-        str(cache_hit).lower(),
-        f" error={error}" if error else "",
+        "tool_call",
+        agent=agent,
+        tool=tool,
+        trip_id=trip_id,
+        duration_ms=round(duration_ms, 1),
+        status=status,
+        cache_hit=cache_hit,
+        error=error,
     )
 
 

@@ -7,11 +7,40 @@ nodes, the edges and the three routing decisions.
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from app import metrics
 from app.config import get_settings
 from app.graph import nodes
 from app.graph.state import TravelState
+from app.logging_setup import get_logger
 
+logger = get_logger(__name__)
 settings = get_settings()
+
+
+def instrumented(name: str, node):
+    """Time a node and log what it changed.
+
+    Wrapping here means every node is measured without any of them knowing they
+    are being measured.
+    """
+
+    def run(state: TravelState) -> dict:
+        with metrics.node_duration.labels(node=name).time():
+            updates = node(state)
+
+        errors = updates.get("validation_errors") if isinstance(updates, dict) else None
+        for error in errors or []:
+            metrics.validation_failures.labels(reason=metrics.classify_error(error)).inc()
+
+        logger.info(
+            "node_finished",
+            node=name,
+            changed=sorted(updates) if isinstance(updates, dict) else [],
+            status=updates.get("status") if isinstance(updates, dict) else None,
+        )
+        return updates
+
+    return run
 
 
 # --------------------------------------------------------------------------
@@ -53,19 +82,23 @@ def build_graph(checkpointer=None):
     """Compile the workflow. Pass a checkpointer to persist state (Phase 10)."""
     graph = StateGraph(TravelState)
 
-    graph.add_node("parse_request", nodes.parse_request)
-    graph.add_node("validate_request", nodes.validate_request)
-    graph.add_node("research_transport", nodes.research_transport)
-    graph.add_node("research_accommodation", nodes.research_accommodation)
-    graph.add_node("research_experience", nodes.research_experience)
-    graph.add_node("create_itinerary", nodes.create_itinerary)
-    graph.add_node("validate_plan", nodes.validate_plan)
-    graph.add_node("replan", nodes.replan)
-    graph.add_node("apply_feedback", nodes.apply_feedback)
-    graph.add_node("human_review", nodes.human_review)
-    graph.add_node("needs_user_decision", nodes.needs_user_decision)
-    graph.add_node("finalize", nodes.finalize)
-    graph.add_node("output_guard", nodes.output_guard)
+    # Every node is registered the same way, wrapped so it is timed and logged.
+    for name in (
+        "parse_request",
+        "validate_request",
+        "research_transport",
+        "research_accommodation",
+        "research_experience",
+        "create_itinerary",
+        "validate_plan",
+        "replan",
+        "apply_feedback",
+        "human_review",
+        "needs_user_decision",
+        "finalize",
+        "output_guard",
+    ):
+        graph.add_node(name, instrumented(name, getattr(nodes, name)))
 
     graph.add_edge(START, "parse_request")
     graph.add_edge("parse_request", "validate_request")

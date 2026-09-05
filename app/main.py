@@ -2,13 +2,15 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 
+from app import metrics
 from app.api import trips
 from app.config import get_settings
-from app.logging_setup import configure_logging
+from app.logging_setup import configure_logging, get_logger, log_context, new_request_id
 
 configure_logging()
+logger = get_logger(__name__)
 settings = get_settings()
 
 
@@ -31,6 +33,27 @@ app = FastAPI(
 )
 
 app.include_router(trips.router)
+
+
+@app.middleware("http")
+async def add_request_context(request: Request, call_next):
+    """Give every request an id, and put it on every log line it produces.
+
+    The id also comes back as a header, so a user reporting a problem can quote
+    it and the whole request can be found in the logs.
+    """
+    request_id = request.headers.get("X-Request-ID") or new_request_id()
+    with log_context(request_id=request_id, path=request.url.path):
+        response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.get("/metrics")
+def prometheus_metrics() -> Response:
+    """Prometheus scrape endpoint."""
+    payload, content_type = metrics.render()
+    return Response(content=payload, media_type=content_type)
 
 
 @app.get("/health")

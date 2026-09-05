@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 11 of 17.** Human-in-the-loop: approve, modify or reject.
+> **Status: Phase 12 of 17.** Structured logging and Prometheus metrics.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,46 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## Observability
+
+Every log line is JSON with the same shape, so one trip can be followed end to
+end by filtering on a single field:
+
+```json
+{"event": "tool_call", "trip_id": "3690ce...", "request_id": "2eb38d8b3ff4",
+ "agent": "transport_agent", "tool": "search_trains", "duration_ms": 0.9,
+ "status": "ok", "cache_hit": false}
+```
+
+`request_id` and `trip_id` are bound once per request and appear on every line
+underneath - the agents and the gateway never pass ids around. The request id
+also comes back as an `X-Request-ID` header, and one you supply is kept, so a
+caller can trace a request they already have an id for.
+
+Secrets are removed by a processor rather than by remembering not to log them:
+by field name (`api_key`, `password`, `token`, ...) and by shape, so a key
+pasted into an innocently named field is caught too.
+
+`APP_ENV=development` renders for humans; anything else renders JSON.
+
+### Metrics
+
+`GET /metrics`, in Prometheus format. Four of them, each answering a question
+someone would actually ask when the system misbehaves:
+
+| Metric | Question |
+|---|---|
+| `llm_calls_total{provider,status}` | is the primary LLM failing, and are we falling back? |
+| `tool_calls_total{tool,status,cache_hit}` | which tools error, and is the cache doing anything? |
+| `trip_validation_failures_total{reason}` | what do plans fail validation for? |
+| `node_duration_seconds{node}` | which part of the workflow is slow? |
+
+Every node is timed by wrapping it once in `build_graph`, so no node knows it is
+being measured. Validation errors are grouped into a handful of stable reasons -
+one label per wording would make the metric useless.
+
+No exporter, no collector, no Grafana. Those would be decoration at this size.
 
 ## Human in the loop
 

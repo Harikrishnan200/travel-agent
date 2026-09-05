@@ -11,14 +11,15 @@ malformed response is treated exactly like a failed call - and falls back too.
 """
 
 import json
-import logging
 from typing import TypeVar
 
 from pydantic import BaseModel
 
+from app import metrics
 from app.config import get_settings
+from app.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 settings = get_settings()
 
 Model = TypeVar("Model", bound=BaseModel)
@@ -58,13 +59,15 @@ def call_llm(
                 parsed = response_model.model_validate(raw)
             except Exception as exc:
                 errors.append(f"{name}: {exc}")
+                metrics.llm_calls.labels(provider=name, status="error").inc()
                 logger.warning(
-                    "llm_call_failed provider=%s attempt=%d error=%s", name, attempt + 1, exc
+                    "llm_call_failed", provider=name, attempt=attempt + 1, error=str(exc)
                 )
                 continue
 
+            metrics.llm_calls.labels(provider=name, status="ok").inc()
             if index > 0:
-                logger.warning("llm_fallback_used provider=%s", name)
+                logger.warning("llm_fallback_used", provider=name)
             return parsed, LLMResult(
                 data=parsed.model_dump(), provider=name, fallback_used=index > 0
             )

@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 from app.db import database
 from app.graph.graph import build_graph
 from app.graph.state import new_state
+from app.logging_setup import get_logger, log_context
 
+logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/trips", tags=["trips"])
 
 _graph = None
@@ -134,13 +136,17 @@ def _resume(trip_id: str, decision: dict, event: str) -> TripResponse:
             detail=f"This plan cannot be {decision['action']}d. You can: {', '.join(offered)}.",
         )
 
-    database.record_event(trip_id, event, decision)
-    state = get_graph().invoke(Command(resume=decision), config=config)
+    with log_context(trip_id=trip_id):
+        database.record_event(trip_id, event, decision)
+        logger.info("human_decision", action=decision["action"])
 
-    plan = _plan_of(state)
-    database.save_trip(trip_id, state, plan)
-    database.record_event(trip_id, "workflow_continued", {"status": state.get("status")})
-    return _to_response(trip_id, state, _pending_decision(trip_id))
+        state = get_graph().invoke(Command(resume=decision), config=config)
+
+        plan = _plan_of(state)
+        database.save_trip(trip_id, state, plan)
+        database.record_event(trip_id, "workflow_continued", {"status": state.get("status")})
+        logger.info("workflow_continued", status=state.get("status"))
+        return _to_response(trip_id, state, _pending_decision(trip_id))
 
 
 @router.post("", response_model=TripResponse, status_code=201)
@@ -151,25 +157,25 @@ def create_trip(request: CreateTripRequest) -> TripResponse:
 
     # The row goes in before anything else, so a trip that fails mid-plan still
     # leaves a record, and so its events have something to hang off.
-    initial = new_state(trip_id, request.message)
-    database.save_trip(trip_id, initial)
-    database.record_event(trip_id, "trip_requested", {"message": request.message})
+    with log_context(trip_id=trip_id):
+        initial = new_state(trip_id, request.message)
+        database.save_trip(trip_id, initial)
+        database.record_event(trip_id, "trip_requested", {"message": request.message})
+        logger.info("trip_requested")
 
-    state = get_graph().invoke(initial, config=config)
+        state = get_graph().invoke(initial, config=config)
 
-    plan = _plan_of(state)
-    database.save_trip(trip_id, state, plan)
-    database.record_event(
-        trip_id,
-        "planning_finished",
-        {
+        plan = _plan_of(state)
+        database.save_trip(trip_id, state, plan)
+        outcome = {
             "status": state.get("status"),
             "total_cost": state.get("total_cost"),
             "replan_attempts": state.get("replan_attempts"),
             "validation_errors": state.get("validation_errors"),
-        },
-    )
-    return _to_response(trip_id, state, _pending_decision(trip_id))
+        }
+        database.record_event(trip_id, "planning_finished", outcome)
+        logger.info("planning_finished", **outcome)
+        return _to_response(trip_id, state, _pending_decision(trip_id))
 
 
 @router.post("/{trip_id}/approve", response_model=TripResponse)
