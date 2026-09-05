@@ -237,8 +237,9 @@ def test_a_rate_limit_hint_is_obeyed(real_backoff):
     assert client._backoff_for(error) == pytest.approx(8.2775)
 
 
-def test_a_very_long_hint_is_capped(real_backoff):
-    assert client._backoff_for("try again in 600s") == 20.0
+def test_a_wait_longer_than_we_will_give_is_not_waited_for(real_backoff):
+    """Capping it would mean sleeping 20 seconds and failing anyway."""
+    assert client._backoff_for("try again in 600s") is None
 
 
 def test_a_rate_limit_without_a_hint_still_waits(real_backoff):
@@ -316,3 +317,169 @@ def test_gemini_is_asked_for_json_at_temperature_zero(monkeypatch):
     assert captured["config"]["temperature"] == 0
     assert captured["config"]["system_instruction"] == "be helpful"
     assert captured["client_kwargs"]["api_key"] == "test-key"
+
+
+# --- caching answers --------------------------------------------------------
+# Every call asks for temperature 0, so the same question is meant to give the
+# same answer. Free tiers are small - Gemini's is twenty requests a day - so
+# re-asking is the difference between a demo that works twice and one that does
+# not.
+
+
+@pytest.fixture
+def cache_available(isolated_infrastructure):
+    """The autouse fixture already points the cache at a fake Redis."""
+    return isolated_infrastructure
+
+
+def test_an_identical_question_is_not_asked_twice(
+    monkeypatch, both_providers_configured, cache_available
+):
+    calls = fake_invoke(monkeypatch, {"groq": {"city": "Delhi", "days": 5}})
+
+    first, _ = call_llm("system", "user", Answer)
+    second, result = call_llm("system", "user", Answer)
+
+    assert calls == ["groq"]  # the provider was asked once
+    assert second == first
+    assert result.provider == "groq"
+
+
+def test_a_cached_answer_is_reported_as_cached(
+    monkeypatch, both_providers_configured, cache_available
+):
+    fake_invoke(monkeypatch, {"groq": {"city": "Delhi", "days": 5}})
+
+    call_llm("system", "user", Answer)
+    with client.track_usage() as usage:
+        call_llm("system", "user", Answer)
+
+    summary = client.summarize_usage(usage())
+    assert summary["cached_calls"] == 1
+    assert summary["total_duration_ms"] == 0
+
+
+def test_a_different_prompt_is_a_different_question(
+    monkeypatch, both_providers_configured, cache_available
+):
+    calls = fake_invoke(monkeypatch, {"groq": {"city": "Delhi", "days": 5}})
+
+    call_llm("system", "first question", Answer)
+    call_llm("system", "second question", Answer)
+
+    assert calls == ["groq", "groq"]
+
+
+def test_the_same_words_asked_for_a_different_shape_is_a_different_question():
+    class Other(BaseModel):
+        city: str
+
+    assert client._cache_key("s", "u", Answer) != client._cache_key("s", "u", Other)
+
+
+def test_a_failed_call_is_never_cached(monkeypatch, both_providers_configured, cache_available):
+    """Caching a failure would turn a blip into an hour of blips."""
+    calls = fake_invoke(monkeypatch, {"groq": TimeoutError("down"), "gemini": TimeoutError("down")})
+
+    for _ in range(2):
+        with pytest.raises(LLMUnavailable):
+            call_llm("system", "user", Answer)
+
+    assert len(calls) == 6  # tried again the second time, not served a cached failure
+
+
+# --- reporting the waiting --------------------------------------------------
+
+
+def test_time_spent_waiting_to_retry_is_reported(
+    monkeypatch, both_providers_configured, cache_available
+):
+    """Found by chasing 5 unexplained seconds a node: a rate-limited request
+    was waiting, and nothing said so."""
+    monkeypatch.setattr(client, "RATE_LIMIT_BACKOFF_SECONDS", 0.05)
+    fake_invoke(
+        monkeypatch,
+        {"groq": RuntimeError("429 rate limit"), "gemini": {"city": "Delhi", "days": 5}},
+    )
+
+    with client.track_usage() as usage:
+        call_llm("system", "user", Answer)
+
+    summary = client.summarize_usage(usage())
+    assert summary["waiting_ms"] > 0
+    assert summary["provider"] == "gemini"
+    # Waiting is neither ours nor the model's, so it is counted apart.
+    assert "-" not in summary["providers_tried"]
+
+
+def test_usage_can_be_read_after_the_block_exits(
+    monkeypatch, both_providers_configured, cache_available
+):
+    """Reading it afterwards is the natural thing to write, so it must work."""
+    fake_invoke(monkeypatch, {"groq": {"city": "Delhi", "days": 5}})
+
+    with client.track_usage() as usage:
+        call_llm("system", "read after exit", Answer)
+
+    assert client.summarize_usage(usage())["provider"] == "groq"
+
+
+# --- not waiting for something that cannot happen ---------------------------
+
+
+@pytest.mark.parametrize(
+    ("error", "label"),
+    [
+        ("429 RESOURCE_EXHAUSTED: quota exceeded", "a daily quota"),
+        ("You exceeded your current quota", "an exhausted allowance"),
+        ("Please retry in 34.03s", "a wait longer than we will give"),
+    ],
+)
+def test_a_hopeless_retry_is_not_waited_for(real_backoff, error, label):
+    """Ten seconds a request was going into sleeps that could never succeed."""
+    assert client._backoff_for(error) is None
+    assert client._is_hopeless(error) is True
+
+
+def test_both_providers_phrasings_of_the_hint_are_understood(real_backoff):
+    """Groq says "try again in", Gemini says "Please retry in"."""
+    assert client._backoff_for("Please try again in 7.5s") == pytest.approx(8.0)
+    assert client._backoff_for("Please retry in 7.5s") == pytest.approx(8.0)
+
+
+def test_a_hopeless_provider_is_given_up_immediately(
+    monkeypatch, both_providers_configured, cache_available
+):
+    """One attempt, not two, when the second cannot possibly work."""
+    calls = fake_invoke(
+        monkeypatch,
+        {
+            "groq": RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded"),
+            "gemini": {"city": "Delhi", "days": 5},
+        },
+    )
+
+    _answer, result = call_llm("system", "hopeless", Answer)
+
+    assert calls == ["groq", "gemini"]  # groq tried once, not twice
+    assert result.provider == "gemini"
+
+
+def test_giving_up_early_costs_no_waiting(monkeypatch, both_providers_configured, cache_available):
+    fake_invoke(
+        monkeypatch,
+        {
+            "groq": RuntimeError("quota exceeded"),
+            "gemini": {"city": "Delhi", "days": 5},
+        },
+    )
+
+    with client.track_usage() as usage:
+        call_llm("system", "no waiting", Answer)
+
+    assert client.summarize_usage(usage())["waiting_ms"] == 0
+
+
+def test_a_zero_wait_still_retries():
+    """Zero is a real wait, not a signal to stop - the suite relies on it."""
+    assert client._backoff_for("connection reset") == 0.0  # the autouse fixture zeroes it

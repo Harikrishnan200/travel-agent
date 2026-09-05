@@ -10,6 +10,7 @@ Every call asks for structured output and parses it into a Pydantic model, so a
 malformed response is treated exactly like a failed call - and falls back too.
 """
 
+import hashlib
 import json
 import re
 import time
@@ -19,7 +20,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from app import metrics
+from app import cache, metrics
 from app.config import get_settings
 from app.logging_setup import get_logger
 
@@ -40,8 +41,21 @@ PRIMARY_ATTEMPTS = 2
 RATE_LIMIT_BACKOFF_SECONDS = 5.0
 TRANSIENT_BACKOFF_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 20.0
-RETRY_HINT = re.compile(r"try again in ([\d.]+)s")
+# Providers phrase this differently: Groq says "try again in 7.8s", Gemini
+# says "Please retry in 34.03s".
+RETRY_HINT = re.compile(r"(?:try again|retry) in ([\d.]+)s", re.IGNORECASE)
 RATE_LIMITED = re.compile(r"rate.?limit|429|quota|too many requests", re.IGNORECASE)
+
+# A daily allowance does not come back in a few seconds, so there is nothing to
+# wait for. Move on to the next provider instead.
+EXHAUSTED = re.compile(
+    r"resource_exhausted|quota exceeded|exceeded your current quota|per ?day", re.IGNORECASE
+)
+
+# Answers are cached for an hour. Long enough to make a demo repeatable and to
+# survive a free tier's daily allowance; short enough that a prompt change is
+# never masked for long.
+LLM_CACHE_TTL_SECONDS = 3600
 
 
 class LLMUnavailable(RuntimeError):
@@ -64,12 +78,51 @@ _usage: ContextVar[list[dict] | None] = ContextVar("llm_usage", default=None)
 
 @contextmanager
 def track_usage():
-    """Collect which providers answer inside this block."""
-    token = _usage.set([])
+    """Collect which providers answer inside this block.
+
+    The getter closes over the list rather than reading the context variable, so
+    it still works after the block exits. Reading it afterwards is the natural
+    thing to write, and returning nothing there is a trap.
+    """
+    collected: list[dict] = []
+    token = _usage.set(collected)
     try:
-        yield lambda: list(_usage.get() or [])
+        yield lambda: list(collected)
     finally:
         _usage.reset(token)
+
+
+def _cache_key(system_prompt: str, user_prompt: str, response_model: type[BaseModel]) -> str:
+    """One key per question. The schema is included because the same words asked
+    for a different shape are a different question."""
+    payload = json.dumps(
+        {
+            "system": system_prompt,
+            "user": user_prompt,
+            "schema": response_model.model_json_schema(),
+        },
+        sort_keys=True,
+    )
+    return f"llm:{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
+
+
+def _record_wait(waited_ms: float) -> None:
+    """Time spent waiting to retry.
+
+    Counted separately because it is neither the model being slow nor us being
+    slow: it is us being told to wait. Left out, a rate-limited request looks
+    like unexplained overhead, which is exactly how it was found.
+    """
+    calls = _usage.get()
+    if calls is not None:
+        calls.append(
+            {
+                "provider": "-",
+                "status": "waited",
+                "duration_ms": round(waited_ms, 1),
+                "fallback_used": False,
+            }
+        )
 
 
 def _record(provider: str, status: str, duration_ms: float, fallback_used: bool) -> None:
@@ -90,15 +143,24 @@ def summarize_usage(calls: list[dict]) -> dict | None:
     if not calls:
         return None
 
-    answered = [call for call in calls if call["status"] == "ok"]
+    answered = [call for call in calls if call["status"] in {"ok", "cached"}]
+    waits = [call for call in calls if call["status"] == "waited"]
+    requests = [call for call in calls if call["status"] != "waited"]
+
     return {
-        # The provider that actually produced the answers, if only one did.
         "provider": answered[-1]["provider"] if answered else None,
-        "providers_tried": list(dict.fromkeys(call["provider"] for call in calls)),
+        "providers_tried": [
+            provider
+            for provider in dict.fromkeys(call["provider"] for call in requests)
+            if provider != "-"
+        ],
         "fallback_used": any(call["fallback_used"] for call in answered),
-        "calls": len(calls),
-        "failed_calls": len(calls) - len(answered),
-        "total_duration_ms": round(sum(call["duration_ms"] for call in calls), 1),
+        "calls": len(requests),
+        "cached_calls": sum(1 for call in calls if call["status"] == "cached"),
+        "failed_calls": len(requests) - len(answered),
+        "total_duration_ms": round(sum(call["duration_ms"] for call in requests), 1),
+        # Time spent waiting to retry, which is neither ours nor the model's.
+        "waiting_ms": round(sum(call["duration_ms"] for call in waits), 1),
     }
 
 
@@ -107,7 +169,21 @@ def call_llm(
     user_prompt: str,
     response_model: type[Model],
 ) -> tuple[Model, LLMResult]:
-    """Ask the LLM for a structured answer, falling back if the primary fails."""
+    """Ask the LLM for a structured answer, falling back if the primary fails.
+
+    Identical questions are answered from cache. Every call here asks for
+    temperature 0, so the same prompt is meant to give the same answer anyway -
+    and free tiers are small enough that re-asking is the difference between a
+    demo that works twice and one that does not.
+    """
+    cache_key = _cache_key(system_prompt, user_prompt, response_model)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        _record(cached["provider"], "cached", 0.0, fallback_used=False)
+        return response_model.model_validate(cached["data"]), LLMResult(
+            data=cached["data"], provider=cached["provider"], fallback_used=False
+        )
+
     providers = _provider_chain()
     if not providers:
         raise LLMUnavailable("No LLM provider is configured. Set GROQ_API_KEY or GEMINI_API_KEY.")
@@ -129,13 +205,26 @@ def call_llm(
                     "llm_call_failed", provider=name, attempt=attempt + 1, error=str(exc)
                 )
                 if attempt + 1 < attempts:
-                    time.sleep(_backoff_for(str(exc)))
+                    waited = _backoff_for(str(exc))
+                    if waited is None:
+                        # Nothing to wait for; give this provider up now.
+                        logger.warning("llm_provider_given_up", provider=name)
+                        break
+                    if waited:
+                        _record_wait(waited * 1000)
+                        time.sleep(waited)
                 continue
 
             metrics.llm_calls.labels(provider=name, status="ok").inc()
             _record(name, "ok", (time.monotonic() - started) * 1000, fallback_used=index > 0)
             if index > 0:
                 logger.warning("llm_fallback_used", provider=name)
+
+            cache.set(
+                cache_key,
+                {"data": parsed.model_dump(), "provider": name},
+                LLM_CACHE_TTL_SECONDS,
+            )
             return parsed, LLMResult(
                 data=parsed.model_dump(), provider=name, fallback_used=index > 0
             )
@@ -143,14 +232,36 @@ def call_llm(
     raise LLMUnavailable("All LLM providers failed: " + " | ".join(errors))
 
 
-def _backoff_for(error: str) -> float:
-    """How long to wait before trying again, based on why the call failed."""
+def _backoff_for(error: str) -> float | None:
+    """How long to wait before trying again, or None to stop trying.
+
+    None means retrying cannot work: a provider asking for longer than we are
+    willing to wait, or a daily quota that will not reset today. Waiting five
+    seconds for something that needs thirty-four is pure delay, and it was
+    costing ten seconds a request.
+
+    None is distinct from zero on purpose. Zero is a legitimate wait - the test
+    suite uses it to retry without sleeping - and overloading it to mean "give
+    up" silently turned off every retry.
+    """
+    if _is_hopeless(error):
+        return None
+
     hint = RETRY_HINT.search(error)
     if hint:
-        return min(float(hint.group(1)) + 0.5, MAX_BACKOFF_SECONDS)
+        wanted = float(hint.group(1)) + 0.5
+        return wanted if wanted <= MAX_BACKOFF_SECONDS else None
     if RATE_LIMITED.search(error):
         return RATE_LIMIT_BACKOFF_SECONDS
     return TRANSIENT_BACKOFF_SECONDS
+
+
+def _is_hopeless(error: str) -> bool:
+    """Whether retrying this provider now cannot possibly work."""
+    if EXHAUSTED.search(error):
+        return True
+    hint = RETRY_HINT.search(error)
+    return bool(hint) and float(hint.group(1)) > MAX_BACKOFF_SECONDS
 
 
 def _schema_for(model: type[BaseModel]) -> str:
