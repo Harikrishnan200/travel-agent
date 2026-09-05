@@ -13,9 +13,13 @@ KNOWN_PLACES: dict[str, list[tuple[str, str]]] = {
         ("Humayun's Tomb", "historical"),
         ("Qutub Minar", "historical"),
         ("India Gate", "historical"),
+        ("Jama Masjid", "historical"),
         ("Chandni Chowk Food Walk", "food"),
+        ("Paranthe Wali Gali", "food"),
         ("Lodhi Gardens", "nature"),
+        ("Sunder Nursery", "nature"),
         ("National Museum", "culture"),
+        ("Crafts Museum", "culture"),
         ("Dilli Haat", "shopping"),
     ],
     "Kochi": [
@@ -35,9 +39,13 @@ KNOWN_PLACES: dict[str, list[tuple[str, str]]] = {
     ],
     "Goa": [
         ("Calangute Beach", "nature"),
+        ("Palolem Beach", "nature"),
         ("Basilica of Bom Jesus", "historical"),
+        ("Fort Aguada", "historical"),
         ("Dudhsagar Falls", "adventure"),
+        ("Spice Plantation Lunch", "food"),
         ("Anjuna Flea Market", "shopping"),
+        ("Latin Quarter of Fontainhas", "culture"),
     ],
     "Agra": [
         ("Taj Mahal", "historical"),
@@ -51,13 +59,26 @@ KNOWN_PLACES: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# Filler so every city has a few options in every category. A seven day trip
+# needs roughly seventeen activity slots, and the named landmarks alone do not
+# stretch that far once the traveller's interests narrow the list.
 GENERIC = [
-    ("{city} Museum", "culture"),
     ("{city} Old Fort", "historical"),
+    ("Heritage Walk in {city}", "historical"),
+    ("{city} Stepwell", "historical"),
     ("{city} Botanical Garden", "nature"),
+    ("{city} Lakeside Park", "nature"),
+    ("Sunset Point near {city}", "nature"),
     ("{city} Street Food Lane", "food"),
-    ("{city} Central Market", "shopping"),
+    ("{city} Spice Market Tasting", "food"),
+    ("Traditional Thali at {city}", "food"),
+    ("{city} Museum", "culture"),
+    ("{city} Craft Village", "culture"),
+    ("Evening Music at {city}", "culture"),
     ("{city} Adventure Park", "adventure"),
+    ("Cycling Tour of {city}", "adventure"),
+    ("{city} Central Market", "shopping"),
+    ("{city} Artisan Bazaar", "shopping"),
 ]
 
 # Roughly how long a visit takes and whether rain ruins it.

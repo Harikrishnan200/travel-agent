@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # Infrastructure
     database_url: str = "postgresql+psycopg://travel:travel@localhost:5432/travel"
     redis_url: str = "redis://localhost:6379/0"
+    db_pool_size: int = 10
 
     # MCP
     mcp_gateway_url: str = "http://localhost:9000"

@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 9 of 17.** Re-planning: budget levers and weather rescheduling.
+> **Status: Phase 10 of 17.** Postgres persistence; a trip survives a restart.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,31 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## Persistence
+
+Two places, answering two different questions.
+
+**The LangGraph checkpointer** writes the workflow state to Postgres after every
+node. That is what makes a trip resumable: the API can stop at human review and a
+different process can pick the same trip up later. Verified by killing the
+process and asking a fresh one for the trip - it comes back complete.
+
+**The `trips` and `trip_events` tables** answer what the checkpointer cannot:
+list recent trips, look one up by status, see what happened to it and when. Two
+tables, with the plan itself in JSONB, because trips are queried by id and status
+rather than by hotel rating.
+
+Postgres is where a trip is *remembered*, not where it is *planned*. With no
+database the system still plans normally; it just forgets. `GET /health` reports
+which of the two you are running.
+
+| Endpoint | |
+|---|---|
+| `POST /api/v1/trips` | plan a trip |
+| `GET /api/v1/trips` | recent trips, from Postgres |
+| `GET /api/v1/trips/{id}` | one trip, resumed from the checkpointer |
+| `GET /api/v1/trips/{id}/events` | that trip's audit trail |
 
 ## Re-planning
 
