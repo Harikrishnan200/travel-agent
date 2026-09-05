@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 14 of 17.** Full test suite, 378 tests at 94% coverage.
+> **Status: Phase 15 of 17.** Runs under `docker compose up`.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,36 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## Running with Docker
+
+```bash
+cp .env.example .env      # optional: add keys for real providers
+docker compose up
+```
+
+Then <http://localhost:8000/docs>.
+
+Three containers, and the app image runs twice:
+
+| Container | What it is |
+|---|---|
+| `app` | the FastAPI service |
+| `mcp` | the MCP Gateway plus the four MCP servers, five processes |
+| `postgres`, `redis` | on 5433 and 6380, so they sit beside anything already running locally |
+
+The two application containers set `SPLIT_PROCESSES=true`, so every hop is real
+HTTP: agents to gateway, gateway to MCP server. That is the configuration worth
+demonstrating, and the one the transport tests cover.
+
+Five images to show MCP would be five times the operations for none of the
+learning, so the MCP servers share one container. The gateway listens on every
+interface because the API reaches it from outside; the MCP servers stay on
+localhost, because only the gateway has any business talking to them.
+
+**A trip survives a restart.** Create one, run `docker compose restart app`, and
+it comes back mid-workflow, still waiting for approval, and can still be
+approved - which is the whole point of the Postgres checkpointer.
 
 ## Tests
 
@@ -429,6 +459,36 @@ flowchart TD
     HR -->|approve| FIN[finalize] --> OG[output_guard] --> END3[END]
     HR -->|wait| END3
 ```
+
+## Running with Docker
+
+```bash
+cp .env.example .env      # optional: add keys for real providers
+docker compose up
+```
+
+Then <http://localhost:8000/docs>.
+
+Three containers, and the app image runs twice:
+
+| Container | What it is |
+|---|---|
+| `app` | the FastAPI service |
+| `mcp` | the MCP Gateway plus the four MCP servers, five processes |
+| `postgres`, `redis` | on 5433 and 6380, so they sit beside anything already running locally |
+
+The two application containers set `SPLIT_PROCESSES=true`, so every hop is real
+HTTP: agents to gateway, gateway to MCP server. That is the configuration worth
+demonstrating, and the one the transport tests cover.
+
+Five images to show MCP would be five times the operations for none of the
+learning, so the MCP servers share one container. The gateway listens on every
+interface because the API reaches it from outside; the MCP servers stay on
+localhost, because only the gateway has any business talking to them.
+
+**A trip survives a restart.** Create one, run `docker compose restart app`, and
+it comes back mid-workflow, still waiting for approval, and can still be
+approved - which is the whole point of the Postgres checkpointer.
 
 ## Tests
 

@@ -13,6 +13,11 @@ import httpx
 from mcp_servers.cities import UnknownCityError, normalize_city
 from mcp_servers.places.mock_data import city_coordinates
 
+
+class OutsideForecastWindow(ValueError):
+    """The date is further ahead than anyone can forecast."""
+
+
 API_URL = "https://api.open-meteo.com/v1/forecast"
 DAILY_FIELDS = "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code"
 FORECAST_DAYS = 16
@@ -43,7 +48,7 @@ def get_weather(city: str, date: str, timeout: float = 10.0) -> dict:
 
     days_ahead = (date_type.fromisoformat(date) - date_type.today()).days
     if not 0 <= days_ahead < FORECAST_DAYS:
-        raise ValueError(
+        raise OutsideForecastWindow(
             f"Open-Meteo forecasts {FORECAST_DAYS} days ahead; {date} is outside that window."
         )
 

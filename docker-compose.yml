@@ -1,0 +1,77 @@
+# docker compose up
+#
+# Three containers. The app image runs twice: once for the API and once for the
+# gateway plus the four MCP servers, so the MCP hops are real HTTP rather than
+# function calls - which is the configuration worth demonstrating.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: travel
+      POSTGRES_PASSWORD: travel
+      POSTGRES_DB: travel
+    ports:
+      - "5433:5432"   # 5433 on the host, to sit beside a local Postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U travel -d travel"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"   # 6380 on the host, for the same reason
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # The MCP Gateway and the four MCP servers, as five processes in one container.
+  mcp:
+    build: .
+    command: ["python", "scripts/run_services.py"]
+    environment:
+      SPLIT_PROCESSES: "true"
+      REDIS_URL: redis://redis:6379/0
+      # Bind to every interface: the API container has to reach these.
+      MCP_HOST: 0.0.0.0
+      TRANSPORT_MCP_URL: http://localhost:9101/mcp
+      HOTELS_MCP_URL: http://localhost:9102/mcp
+      PLACES_MCP_URL: http://localhost:9103/mcp
+      WEATHER_MCP_URL: http://localhost:9104/mcp
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "9000:9000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  app:
+    build: .
+    environment:
+      SPLIT_PROCESSES: "true"
+      DATABASE_URL: postgresql+psycopg://travel:travel@postgres:5432/travel
+      REDIS_URL: redis://redis:6379/0
+      MCP_GATEWAY_URL: http://mcp:9000
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mcp:
+        condition: service_started
+
+volumes:
+  postgres_data:

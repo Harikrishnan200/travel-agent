@@ -9,17 +9,35 @@ not used.
 Ctrl-C stops everything.
 """
 
+import os
 import signal
 import subprocess
 import sys
 import time
+
+# The gateway listens on every interface because the API reaches it from another
+# container. The MCP servers stay on localhost: only the gateway talks to them,
+# and there is no reason for anything else to be able to.
+GATEWAY_HOST = os.environ.get("GATEWAY_HOST", "0.0.0.0")
 
 SERVICES = [
     ("transport-mcp", [sys.executable, "-m", "mcp_servers.transport.server"]),
     ("hotels-mcp", [sys.executable, "-m", "mcp_servers.hotels.server"]),
     ("places-mcp", [sys.executable, "-m", "mcp_servers.places.server"]),
     ("weather-mcp", [sys.executable, "-m", "mcp_servers.weather.server"]),
-    ("gateway", [sys.executable, "-m", "uvicorn", "gateway.server:app", "--port", "9000"]),
+    (
+        "gateway",
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "gateway.server:app",
+            "--host",
+            GATEWAY_HOST,
+            "--port",
+            "9000",
+        ],
+    ),
 ]
 
 

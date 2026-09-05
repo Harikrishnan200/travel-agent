@@ -12,9 +12,10 @@ Run standalone:
 
 import logging
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
+from app import metrics
 from app.config import get_settings
 from app.logging_setup import configure_logging
 from gateway import service
@@ -51,6 +52,18 @@ class ToolCallRequest(BaseModel):
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "split_processes": settings.split_processes}
+
+
+@app.get("/metrics")
+def prometheus_metrics() -> Response:
+    """Prometheus scrape endpoint.
+
+    Metrics live in the process that records them, and tool calls are executed
+    here. Without this endpoint, tool_calls_total would be collected in the
+    gateway and readable by nobody whenever the two run apart.
+    """
+    payload, content_type = metrics.render()
+    return Response(content=payload, media_type=content_type)
 
 
 @app.get("/tools", dependencies=[Depends(authenticate)])
