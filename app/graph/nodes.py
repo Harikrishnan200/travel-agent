@@ -12,6 +12,7 @@ Nodes still carrying a stub note name the phase that finishes them.
 import logging
 from datetime import date, timedelta
 
+from langgraph.types import interrupt
 from pydantic import BaseModel
 
 from app.agents import travel_manager
@@ -19,7 +20,7 @@ from app.agents.accommodation_agent import research_accommodation as accommodati
 from app.agents.experience_agent import research_experience as experience_agent
 from app.agents.transport_agent import research_transport as transport_agent
 from app.config import get_settings
-from app.graph import extraction
+from app.graph import extraction, feedback
 from app.graph.prompts import DESCRIBE_ITINERARY_SYSTEM, DESCRIBE_ITINERARY_USER
 from app.graph.state import TravelState
 from app.guardrails import output_guard as output_rules
@@ -308,7 +309,11 @@ def validate_plan(state: TravelState) -> dict:
     """Deterministic validation. Every rule lives in app/validation/validators.py."""
     costs = compute_costs(state)
     errors = validators.validate_plan(state, costs["total_cost"])
-    return {**costs, "validation_errors": errors}
+
+    # The status is set here rather than in human_review, because that node
+    # interrupts before it can return anything.
+    status = "planning" if errors else "awaiting_approval"
+    return {**costs, "validation_errors": errors, "status": status}
 
 
 def replan(state: TravelState) -> dict:
@@ -322,12 +327,100 @@ def replan(state: TravelState) -> dict:
 
 
 def human_review(state: TravelState) -> dict:
-    """Pause for human approval.
+    """Pause and wait for the traveller to approve, modify or reject the plan.
 
-    Phase 11 replaces the body with a LangGraph interrupt(). For now the graph
-    simply stops here and the API reports the plan as awaiting approval.
+    interrupt() stops the graph here and saves the state to the checkpointer. The
+    API returns the plan, and a later call to /approve, /modify or /reject
+    resumes this same node with the traveller's answer. Approval is asked once
+    per version of the plan, never per tool call.
     """
-    return {"status": "awaiting_approval"}
+    # A plan we could not make valid may still be changed or abandoned, but it
+    # must not be approvable: the output guard would only reject it later.
+    errors = state.get("validation_errors", [])
+    options = ["modify", "reject"] if errors else ["approve", "modify", "reject"]
+
+    decision = interrupt(
+        {
+            "summary": travel_manager.summarize_for_human(state),
+            "total_cost": state.get("total_cost"),
+            "budget": state.get("budget"),
+            "problems": errors,
+            "message": state.get("final_response") or "",
+            "options": options,
+        }
+    )
+
+    # Whatever the API passed to Command(resume=...) arrives here.
+    if not isinstance(decision, dict):
+        decision = {"action": str(decision)}
+    action = decision.get("action")
+
+    if action == "approve":
+        return {"human_approved": True, "human_feedback": ""}
+
+    if action == "modify":
+        return {
+            "human_approved": False,
+            "human_feedback": decision.get("feedback", ""),
+            # A modification is a fresh round of re-planning, not a continuation
+            # of the automatic one, so the attempt count starts over.
+            "replan_attempts": 0,
+        }
+
+    return {
+        "human_approved": False,
+        "human_feedback": "",
+        "status": "rejected",
+        "final_response": "The plan was rejected. Tell me what to change and I will plan again.",
+    }
+
+
+def apply_feedback(state: TravelState) -> dict:
+    """Act on what the traveller asked for, then re-plan from the experience step.
+
+    Automatic re-planning reacts to validation errors. This reacts to a person,
+    so it changes the requirements rather than just squeezing the numbers.
+    """
+    text = state.get("human_feedback", "")
+    degraded = list(state.get("degraded", []))
+
+    try:
+        intent, result = feedback.interpret_with_llm(text)
+        if result.fallback_used:
+            degraded.append(f"primary LLM unavailable, used {result.provider}")
+    except LLMUnavailable:
+        logger.warning("llm unavailable, reading the feedback with simple rules")
+        intent = feedback.interpret_with_rules(text)
+        note = "no LLM available, your feedback was read with simple rules"
+        if note not in degraded:
+            degraded.append(note)
+
+    updates: dict = {
+        "degraded": degraded,
+        # The feedback has been acted on; leaving it set would loop.
+        "human_feedback": "",
+        "replan_attempts": 0,
+        "validation_errors": [],
+    }
+
+    if intent.new_budget:
+        updates["budget"] = intent.new_budget
+
+    if intent.add_interests:
+        merged = list(state.get("interests") or [])
+        merged += [i for i in intent.add_interests if i not in merged]
+        updates["interests"] = merged
+
+    # Apply the money levers straight away, reusing the same functions the
+    # automatic re-planner uses.
+    if intent.cheaper_hotel:
+        updates.update(replanner.cheaper_hotel(state) or {})
+    if intent.cheaper_transport:
+        updates.update(replanner.cheaper_transport(state) or {})
+    if intent.fewer_paid_activities:
+        updates.update(replanner.cheaper_activities(state) or {})
+
+    return updates
 
 
 def needs_user_decision(state: TravelState) -> dict:
@@ -354,6 +447,8 @@ def needs_user_decision(state: TravelState) -> dict:
         lines += ["", "Some searches were unavailable: " + "; ".join(sorted(set(degraded)))]
     lines += ["", ask]
 
+    # The errors stay in the state so human_review knows this plan cannot be
+    # approved, only changed or abandoned.
     return {"status": "needs_user_decision", "final_response": "\n".join(lines)}
 
 

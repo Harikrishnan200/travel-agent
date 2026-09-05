@@ -41,3 +41,17 @@ Interests: {interests}
 Days:
 {days}
 """
+
+
+INTERPRET_FEEDBACK_SYSTEM = """You read a traveller's feedback on a travel plan and
+decide what they are asking for.
+
+Set only what they actually asked for. If they did not mention money, leave the
+cost flags false. If they did not name an interest, leave add_interests empty.
+
+Valid interests: historical, nature, food, culture, adventure, shopping.
+"""
+
+INTERPRET_FEEDBACK_USER = """The traveller said:
+{feedback}
+"""

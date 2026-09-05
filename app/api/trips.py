@@ -9,6 +9,7 @@ trips, or looking one up by status.
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from app.db import database
@@ -48,6 +49,20 @@ class TripResponse(BaseModel):
     validation_errors: list[str] = []
     degraded: list[str] = []
     final_response: str | None = None
+    # Present while the workflow is paused for the traveller.
+    awaiting_decision: dict | None = None
+
+
+class ApproveRequest(BaseModel):
+    approved: bool = True
+
+
+class ModifyRequest(BaseModel):
+    feedback: str = Field(min_length=1, max_length=2000)
+
+
+class MessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
 
 
 class TripSummary(BaseModel):
@@ -76,7 +91,7 @@ def _plan_of(state: dict) -> dict | None:
     }
 
 
-def _to_response(trip_id: str, state: dict) -> TripResponse:
+def _to_response(trip_id: str, state: dict, decision: dict | None = None) -> TripResponse:
     return TripResponse(
         trip_id=trip_id,
         status=state.get("status", "unknown"),
@@ -85,7 +100,47 @@ def _to_response(trip_id: str, state: dict) -> TripResponse:
         validation_errors=state.get("validation_errors", []),
         degraded=state.get("degraded", []),
         final_response=state.get("final_response"),
+        awaiting_decision=decision,
     )
+
+
+def _pending_decision(trip_id: str) -> dict | None:
+    """What the workflow is waiting for, if it is paused at the interrupt."""
+    snapshot = get_graph().get_state({"configurable": {"thread_id": trip_id}})
+    for task in snapshot.tasks:
+        for pending in task.interrupts:
+            return pending.value
+    return None
+
+
+def _resume(trip_id: str, decision: dict, event: str) -> TripResponse:
+    """Answer the interrupt and let the workflow carry on."""
+    config = {"configurable": {"thread_id": trip_id}}
+    snapshot = get_graph().get_state(config)
+    if not snapshot.values:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    pending = _pending_decision(trip_id)
+    if pending is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This trip is not waiting for a decision (status: "
+            f"{snapshot.values.get('status')}).",
+        )
+
+    offered = pending.get("options", [])
+    if decision["action"] not in offered:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This plan cannot be {decision['action']}d. You can: {', '.join(offered)}.",
+        )
+
+    database.record_event(trip_id, event, decision)
+    state = get_graph().invoke(Command(resume=decision), config=config)
+
+    plan = _plan_of(state)
+    database.save_trip(trip_id, state, plan)
+    database.record_event(trip_id, "workflow_continued", {"status": state.get("status")})
+    return _to_response(trip_id, state, _pending_decision(trip_id))
 
 
 @router.post("", response_model=TripResponse, status_code=201)
@@ -114,7 +169,34 @@ def create_trip(request: CreateTripRequest) -> TripResponse:
             "validation_errors": state.get("validation_errors"),
         },
     )
-    return _to_response(trip_id, state)
+    return _to_response(trip_id, state, _pending_decision(trip_id))
+
+
+@router.post("/{trip_id}/approve", response_model=TripResponse)
+def approve_trip(trip_id: str, request: ApproveRequest) -> TripResponse:
+    """Approve the plan, or reject it outright."""
+    action = "approve" if request.approved else "reject"
+    return _resume(trip_id, {"action": action}, f"human_{action}d")
+
+
+@router.post("/{trip_id}/modify", response_model=TripResponse)
+def modify_trip(trip_id: str, request: ModifyRequest) -> TripResponse:
+    """Ask for a change. The plan is re-planned and comes back for review."""
+    return _resume(
+        trip_id, {"action": "modify", "feedback": request.feedback}, "human_requested_change"
+    )
+
+
+@router.post("/{trip_id}/message", response_model=TripResponse)
+def send_message(trip_id: str, request: MessageRequest) -> TripResponse:
+    """Continue the conversation.
+
+    A message while the plan is waiting for review is treated as a request to
+    change it, which is what people actually mean when they reply to a plan.
+    """
+    return _resume(
+        trip_id, {"action": "modify", "feedback": request.message}, "human_requested_change"
+    )
 
 
 @router.get("", response_model=list[TripSummary])
@@ -137,7 +219,7 @@ def get_trip(trip_id: str) -> TripResponse:
     """Fetch a trip, resuming it from the checkpointer."""
     snapshot = get_graph().get_state({"configurable": {"thread_id": trip_id}})
     if snapshot.values:
-        return _to_response(trip_id, snapshot.values)
+        return _to_response(trip_id, snapshot.values, _pending_decision(trip_id))
 
     # The checkpoint may be gone (in-memory saver, restarted process) while the
     # trip row survives. Answer from what we still have rather than 404ing.

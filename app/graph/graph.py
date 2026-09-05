@@ -34,12 +34,14 @@ def route_after_plan_validation(state: TravelState) -> str:
 
 
 def route_after_human_review(state: TravelState) -> str:
-    """Approve, modify or reject. Phase 11 supplies the real human input."""
+    """Act on the answer the traveller gave at the interrupt."""
+    if state.get("status") == "rejected":
+        return "reject"
     if state.get("human_feedback"):
         return "modify"
     if state.get("human_approved"):
         return "approve"
-    return "wait"
+    return "reject"
 
 
 # --------------------------------------------------------------------------
@@ -59,6 +61,7 @@ def build_graph(checkpointer=None):
     graph.add_node("create_itinerary", nodes.create_itinerary)
     graph.add_node("validate_plan", nodes.validate_plan)
     graph.add_node("replan", nodes.replan)
+    graph.add_node("apply_feedback", nodes.apply_feedback)
     graph.add_node("human_review", nodes.human_review)
     graph.add_node("needs_user_decision", nodes.needs_user_decision)
     graph.add_node("finalize", nodes.finalize)
@@ -89,12 +92,20 @@ def build_graph(checkpointer=None):
         },
     )
     graph.add_edge("replan", "validate_plan")
-    graph.add_edge("needs_user_decision", END)
+
+    # Re-planning gave up, so the traveller is asked to change something. They
+    # still get a say: this goes to the same review pause, offering "modify" and
+    # "reject" but not "approve".
+    graph.add_edge("needs_user_decision", "human_review")
+
+    # A modification changes the requirements, so the experience research runs
+    # again (picking up any new interests) before the plan is rebuilt.
+    graph.add_edge("apply_feedback", "research_experience")
 
     graph.add_conditional_edges(
         "human_review",
         route_after_human_review,
-        {"approve": "finalize", "modify": "replan", "wait": END},
+        {"approve": "finalize", "modify": "apply_feedback", "reject": END},
     )
 
     graph.add_edge("finalize", "output_guard")

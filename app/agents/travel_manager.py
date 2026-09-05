@@ -58,6 +58,11 @@ def build_experience_brief(state: dict) -> dict:
     }
 
 
+def _money(amount: float | None) -> str:
+    """Format an amount for the summary, tolerating a missing one."""
+    return f"{amount or 0:>10,.0f}"
+
+
 def _share(budget: float | None, fraction: float) -> float | None:
     """A slice of the budget, or no cap at all when the traveller gave no budget."""
     return None if budget is None else budget * fraction
@@ -90,9 +95,15 @@ def summarize_for_human(state: dict) -> str:
         "Estimated cost:",
     ]
     for label in ("transport", "hotel", "activity", "local_transport"):
-        lines.append(f"  {label.replace('_', ' ').title():<18} Rs {costs.get(label, 0):>10,.0f}")
-    lines.append(f"  {'Total':<18} Rs {state.get('total_cost', 0):>10,.0f}")
-    lines.append(f"  {'Budget':<18} Rs {state.get('budget', 0):>10,.0f}")
+        lines.append(f"  {label.replace('_', ' ').title():<18} Rs {_money(costs.get(label))}")
+    lines.append(f"  {'Total':<18} Rs {_money(state.get('total_cost'))}")
+
+    # A budget is optional, so there may be nothing to compare against.
+    budget = state.get("budget")
+    if budget is None:
+        lines.append(f"  {'Budget':<18} not specified")
+    else:
+        lines.append(f"  {'Budget':<18} Rs {_money(budget)}")
 
     if state.get("degraded"):
         lines += ["", "Note: " + "; ".join(state["degraded"])]

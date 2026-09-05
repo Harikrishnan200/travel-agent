@@ -30,7 +30,7 @@ def replan(state: dict, compute_costs) -> dict:
     updates: dict = {"replan_attempts": state.get("replan_attempts", 0) + 1}
 
     if _has(errors, "Budget exceeded"):
-        for lever in (_cheaper_hotel, _cheaper_transport, _cheaper_activities):
+        for lever in (cheaper_hotel, cheaper_transport, cheaper_activities):
             change = lever(state)
             if change:
                 logger.info("replan applied %s", lever.__name__.strip("_"))
@@ -53,7 +53,7 @@ def _has(errors: list[str], fragment: str) -> bool:
 # --- lever 1: a cheaper hotel ----------------------------------------------
 
 
-def _cheaper_hotel(state: dict) -> dict | None:
+def cheaper_hotel(state: dict) -> dict | None:
     current = (state.get("selected_hotel") or {}).get("total_price", 0)
     cheaper = [h for h in state.get("hotel_options", []) if h.get("total_price", 0) < current]
     if not cheaper:
@@ -70,7 +70,7 @@ def _cheaper_hotel(state: dict) -> dict | None:
 # --- lever 2: cheaper transport --------------------------------------------
 
 
-def _cheaper_transport(state: dict) -> dict | None:
+def cheaper_transport(state: dict) -> dict | None:
     current = state.get("selected_transport") or {}
     alternatives = (state.get("transport_options") or {}).get("alternatives", [])
     cheaper = [
@@ -106,7 +106,7 @@ def _cheaper_transport(state: dict) -> dict | None:
 # --- lever 3: cheaper activities -------------------------------------------
 
 
-def _cheaper_activities(state: dict) -> dict | None:
+def cheaper_activities(state: dict) -> dict | None:
     """Swap the priciest paid activity for a free one, or drop it."""
     days = [dict(day) for day in (state.get("itinerary") or {}).get("days", [])]
     if not days:

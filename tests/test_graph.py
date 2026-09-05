@@ -106,10 +106,11 @@ def test_replanning_stops_after_max_attempts():
     assert route_after_plan_validation(state) == "exhausted"
 
 
-def test_human_review_routes_on_feedback_then_approval():
+def test_human_review_routes_on_the_travellers_decision():
     assert route_after_human_review({"human_feedback": "cheaper hotel"}) == "modify"
     assert route_after_human_review({"human_approved": True}) == "approve"
-    assert route_after_human_review({}) == "wait"
+    assert route_after_human_review({"status": "rejected"}) == "reject"
+    assert route_after_human_review({}) == "reject"
 
 
 # --- re-planning and exhaustion -------------------------------------------

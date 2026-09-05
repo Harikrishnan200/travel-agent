@@ -3,7 +3,7 @@
 Multi-agent travel planner built with **LangGraph** and **MCP**, with deterministic
 validation, re-planning, and human-in-the-loop approval.
 
-> **Status: Phase 10 of 17.** Postgres persistence; a trip survives a restart.
+> **Status: Phase 11 of 17.** Human-in-the-loop: approve, modify or reject.
 > See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full architecture and phase plan.
 
 ## Quick start
@@ -21,6 +21,37 @@ Then: <http://localhost:8000/health> · <http://localhost:8000/docs>
 curl -X POST localhost:8000/api/v1/trips -H 'Content-Type: application/json' \
   -d '{"message":"Plan a 5 day trip from Kochi to Delhi for 2 people under Rs 50000"}'
 ```
+
+## Human in the loop
+
+Once a plan validates, the workflow **stops**. LangGraph's `interrupt()` saves the
+state to the checkpointer and the API returns the plan with what it is waiting
+for. A later call resumes the same node with the traveller's answer - from a
+different process, if need be.
+
+```
+POST /api/v1/trips              -> plan, then pause
+POST /api/v1/trips/{id}/modify  -> change it, re-plan, pause again
+POST /api/v1/trips/{id}/approve -> finalise, or reject with {"approved": false}
+POST /api/v1/trips/{id}/message -> a reply to a waiting plan is a modification
+```
+
+Approval is asked **once per version of the plan**, never per tool call.
+
+A modification is not the same as automatic re-planning. Automatic re-planning
+reacts to validation errors by squeezing the numbers; a modification changes the
+requirements, so it re-runs the experience research and rebuilds the plan. Asking
+to *"reduce hotel cost and add more historical places"* does both halves:
+
+```
+before:  hotel Rs 18,200   food places only        total Rs 27,620
+after:   hotel Rs  9,200   + India Gate, Jama Masjid, Delhi Old Fort
+                                                    total Rs 20,320
+```
+
+A plan that re-planning could not rescue is offered as **modify or reject only** -
+never approve, because the output guard would reject it anyway. Raising the
+budget from there rescues the trip and it becomes approvable.
 
 ## Persistence
 
