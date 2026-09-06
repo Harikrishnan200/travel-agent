@@ -26,6 +26,11 @@ class TravelState(TypedDict, total=False):
     # again for something already listed must change the plan, not be a no-op.
     emphasis: list[str]
 
+    # Set by apply_feedback when the modification changed something that
+    # transport or hotel pricing depends on (travelers, so far), so the router
+    # knows to re-run the whole research pipeline instead of just experience.
+    requires_full_research: bool
+
     # --- raw research results (kept as an audit trail of what tools returned) ---
     transport_options: dict  # {"flights": [...], "trains": [...], "buses": [...]}
     hotel_options: list

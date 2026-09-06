@@ -48,6 +48,7 @@ decide what they are asking for.
 
 Set only what they actually asked for. If they did not mention money, leave the
 cost flags false. If they did not name an interest, leave add_interests empty.
+If they did not mention how many people are travelling, leave new_travelers null.
 
 Valid interests: historical, nature, food, culture, adventure, shopping.
 """

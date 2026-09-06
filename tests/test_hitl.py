@@ -309,3 +309,83 @@ def test_emphasis_outranks_the_weather_preference(client):
         name in {"India Gate", "Red Fort", "Qutub Minar", "Humayun's Tomb", "Jama Masjid"}
         for name in scheduled
     )
+
+
+# --- changing the traveller count ------------------------------------------
+
+
+def test_reducing_travelers_halves_per_head_costs(client):
+    """The bug report: transport and hotel totals must actually track headcount.
+
+    Before this fix, FeedbackIntent had no field for a traveller-count change
+    at all, so "reduce the number of people to 2" silently did nothing - the
+    plan stayed priced for the original headcount.
+    """
+    created = plan(
+        client,
+        "Plan a 5 day trip from Kochi to Bangalore for 4 people under Rs 20000, " "I like food",
+    )
+    before = created["plan"]
+
+    after = client.post(
+        f"/api/v1/trips/{created['trip_id']}/modify",
+        json={"feedback": "i reduced the number of peoples to 2"},
+    ).json()
+    updated = after["plan"]
+
+    assert updated["travelers"] == 2
+    assert updated["hotel"]["rooms_required"] < before["hotel"]["rooms_required"]
+    assert updated["transport"]["total_price"] < before["transport"]["total_price"]
+    assert after["total_cost"] < created["total_cost"]
+
+
+def test_a_traveler_change_rescues_a_plan_that_did_not_fit(client):
+    """Fewer people should be able to turn an impossible plan into a valid one."""
+    created = plan(
+        client,
+        "Plan a 5 day trip from Kochi to Bangalore for 4 people under Rs 20000",
+    )
+    assert created["status"] == "needs_user_decision"
+
+    rescued = client.post(
+        f"/api/v1/trips/{created['trip_id']}/modify",
+        json={"feedback": "actually it's only 2 people now"},
+    ).json()
+
+    assert rescued["status"] == "awaiting_approval"
+    assert rescued["plan"]["travelers"] == 2
+
+
+def test_a_money_lever_is_not_undone_by_a_full_re_research(client):
+    """Asking for a cheaper hotel must not be silently reselected away.
+
+    Guards the fix above: routing modify through the full research pipeline
+    when travelers changes must not also blow away the direct "pick a cheaper
+    hotel" lever on a request that only asked for that.
+    """
+    created = plan(client)
+    before_price = created["plan"]["hotel"]["total_price"]
+
+    after = client.post(
+        f"/api/v1/trips/{created['trip_id']}/modify",
+        json={"feedback": "reduce the hotel cost"},
+    ).json()
+
+    assert after["plan"]["hotel"]["total_price"] < before_price
+    assert after["plan"]["travelers"] == created["plan"]["travelers"]
+
+
+def test_the_rule_based_reader_understands_a_traveler_change():
+    from app.graph.feedback import interpret_with_rules
+
+    intent = interpret_with_rules("i reduced the number of peoples to 2")
+    assert intent.new_travelers == 2
+
+
+def test_reduce_without_a_headcount_is_read_as_a_money_request_not_a_traveler_change():
+    """ "Reduce the hotel cost" must not be misread as a people-count change."""
+    from app.graph.feedback import interpret_with_rules
+
+    intent = interpret_with_rules("reduce the hotel cost please")
+    assert intent.new_travelers is None
+    assert intent.cheaper_hotel is True

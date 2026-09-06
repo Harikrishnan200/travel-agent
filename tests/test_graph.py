@@ -117,9 +117,17 @@ def test_human_review_routes_on_the_travellers_decision():
 
 
 def test_a_tighter_budget_produces_a_cheaper_plan(graph):
-    """The manager allocates the hotel budget up front, so most trips never need a re-plan."""
-    roomy = run(graph, trip_id="roomy", budget=50000.0)
-    tight = run(graph, trip_id="tight", budget=35000.0)
+    """The manager allocates the hotel budget up front, so most trips never need a re-plan.
+
+    The dates are pinned rather than left to default to "today + 14 days":
+    the mock hotel catalogue is seeded by date, so a floating date made this
+    test's outcome depend on which day it happened to run - both budgets
+    could land on the same best-rated hotel if that day's catalogue had
+    nothing pricier that still fit under the roomier cap.
+    """
+    dates = {"start_date": "2026-01-15", "end_date": "2026-01-19"}
+    roomy = run(graph, trip_id="roomy", budget=50000.0, **dates)
+    tight = run(graph, trip_id="tight", budget=22000.0, **dates)
 
     assert tight["selected_hotel"]["total_price"] < roomy["selected_hotel"]["total_price"]
     assert tight["total_cost"] < roomy["total_cost"]

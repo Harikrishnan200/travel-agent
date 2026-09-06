@@ -401,10 +401,20 @@ def apply_feedback(state: TravelState) -> dict:
         "human_feedback": "",
         "replan_attempts": 0,
         "validation_errors": [],
+        "requires_full_research": False,
     }
 
     if intent.new_budget:
         updates["budget"] = intent.new_budget
+
+    if intent.new_travelers and intent.new_travelers != state.get("travelers"):
+        # Fares are quoted per traveller and hotel rooms are booked per head, so
+        # a headcount change makes the current transport and hotel choices
+        # stale. Only travelers forces a full re-run: the money levers below
+        # pick a different *already fetched* option directly, and re-running
+        # research would just reselect the same one and undo that choice.
+        updates["travelers"] = intent.new_travelers
+        updates["requires_full_research"] = True
 
     if intent.add_interests:
         merged = list(state.get("interests") or [])

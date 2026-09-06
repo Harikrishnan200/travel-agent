@@ -62,6 +62,14 @@ def route_after_plan_validation(state: TravelState) -> str:
     return "replan"
 
 
+def route_after_feedback(state: TravelState) -> str:
+    """Full re-research if the modification changed something transport or
+    hotel pricing depends on; otherwise just experience, so a direct money
+    lever (a hotel or transport already swapped for a cheaper one) is not
+    immediately overwritten by a fresh, undiscounted selection."""
+    return "full" if state.get("requires_full_research") else "experience_only"
+
+
 def route_after_human_review(state: TravelState) -> str:
     """Act on the answer the traveller gave at the interrupt."""
     if state.get("status") == "rejected":
@@ -131,9 +139,16 @@ def build_graph(checkpointer=None):
     # "reject" but not "approve".
     graph.add_edge("needs_user_decision", "human_review")
 
-    # A modification changes the requirements, so the experience research runs
-    # again (picking up any new interests) before the plan is rebuilt.
-    graph.add_edge("apply_feedback", "research_experience")
+    # A modification that changed travelers needs the whole pipeline re-run,
+    # because fares and hotel rooms are quoted per head. Anything else (a
+    # money lever, new interests) only needs the experience research, so the
+    # lever's own choice of a cheaper hotel or transport is not immediately
+    # thrown away by a fresh, undiscounted reselection.
+    graph.add_conditional_edges(
+        "apply_feedback",
+        route_after_feedback,
+        {"full": "research_transport", "experience_only": "research_experience"},
+    )
 
     graph.add_conditional_edges(
         "human_review",
