@@ -9,6 +9,8 @@ needs, not the whole TravelState. That keeps agents independent of each other
 and makes it obvious in review what each one is allowed to know.
 """
 
+from app.itinerary_rules import round_trip_transport_cost
+
 # How the budget is split before the agents go shopping. The manager decides
 # this, not the agents, so nobody spends the same rupee twice.
 TRANSPORT_SHARE = 0.35
@@ -71,9 +73,9 @@ def _share(budget: float | None, fraction: float) -> float | None:
 
 
 def _transport_cost(state: dict) -> float:
-    """Return fare for everyone. Duplicated nowhere else: compute_costs uses the same rule."""
+    """Return fare for everyone, there and back. See app/itinerary_rules.py."""
     transport = state.get("selected_transport") or {}
-    return transport.get("price_per_person", 0) * state.get("travelers", 1) * 2
+    return round_trip_transport_cost(transport, state.get("travelers", 1))
 
 
 def summarize_for_human(state: dict) -> str:
@@ -89,8 +91,9 @@ def summarize_for_human(state: dict) -> str:
         f"Dates: {state.get('start_date')} to {state.get('end_date')}",
         "",
         f"Transport: {transport.get('mode', '-')} {transport.get('provider', '')} "
-        f"({transport.get('duration_hours', '-')}h, "
-        f"Rs {transport.get('price_per_person', 0):,.0f} per person)",
+        f"({transport.get('duration_hours', '-')}h one-way, "
+        f"Rs {transport.get('price_per_person', 0):,.0f} per person one-way - "
+        f"the total below covers the return journey too)",
         f"Hotel: {hotel.get('name', '-')} in {hotel.get('location', '-')} "
         f"(rating {hotel.get('rating', '-')}, Rs {hotel.get('price_per_night', 0):,.0f}/night)",
         "",

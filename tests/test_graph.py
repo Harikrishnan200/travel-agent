@@ -189,3 +189,32 @@ def test_output_guard_rejects_a_tampered_total():
         "total_cost": 999999.0,
     }
     assert nodes.output_guard(state)["status"] == "failed"
+
+
+# --- round-trip transport cost: one formula, used everywhere ---------------
+
+
+def test_round_trip_cost_uses_the_providers_total_when_present():
+    from app.itinerary_rules import round_trip_transport_cost
+
+    # A provider whose total is not a clean multiple of price_per_person (a
+    # group rate, say) must be trusted over recomputing it from the per-person
+    # figure - that mismatch is exactly what two separate formulas risked.
+    transport = {"price_per_person": 1000, "total_price": 1800}
+    assert round_trip_transport_cost(transport, travelers=2) == 3600.0
+
+
+def test_round_trip_cost_falls_back_to_per_person_times_travelers():
+    from app.itinerary_rules import round_trip_transport_cost
+
+    transport = {"price_per_person": 500}
+    assert round_trip_transport_cost(transport, travelers=3) == 3000.0
+
+
+def test_the_manager_and_compute_costs_agree_on_the_transport_total(graph):
+    """They used to be two separate formulas that only agreed by coincidence."""
+    from app.agents.travel_manager import _transport_cost
+    from app.graph.nodes import compute_costs
+
+    out = run(graph, trip_id="agree", budget=60000.0)
+    assert _transport_cost(out) == compute_costs(out)["cost_breakdown"]["transport"]

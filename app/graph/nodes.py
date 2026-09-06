@@ -25,6 +25,7 @@ from app.graph.prompts import DESCRIBE_ITINERARY_SYSTEM, DESCRIBE_ITINERARY_USER
 from app.graph.state import TravelState
 from app.guardrails import output_guard as output_rules
 from app.guardrails.input_guard import InputRejected, check_message, check_requirements
+from app.itinerary_rules import round_trip_transport_cost
 from app.llm.client import LLMUnavailable, call_llm
 from app.tools import get_tools
 from app.validation import replan as replanner
@@ -35,6 +36,22 @@ settings = get_settings()
 
 # Rough local travel allowance per person per day (autos, metro, taxis).
 LOCAL_TRANSPORT_PER_DAY = 250
+
+
+def _refresh_degraded(
+    state: TravelState, stale_prefixes: tuple[str, ...], fresh: list[str]
+) -> list[str]:
+    """Replace this domain's own degraded notices with this round's, rather than
+    piling them up forever.
+
+    A tool that failed once and later recovered must not go on looking broken
+    for the rest of the trip: found by reproducing exactly that - a train
+    search failure noted on the first plan was still being shown after a later
+    modify successfully used trains again.
+    """
+    existing = state.get("degraded", [])
+    kept = [note for note in existing if not any(note.startswith(p) for p in stale_prefixes)]
+    return kept + fresh
 
 
 # --------------------------------------------------------------------------
@@ -120,12 +137,24 @@ def research_transport(state: TravelState) -> dict:
             if result.recommended
             else {}
         ),
-        "degraded": state.get("degraded", []) + result.failures,
+        "degraded": _refresh_degraded(
+            state,
+            ("flight search unavailable", "train search unavailable", "bus search unavailable"),
+            result.failures,
+        ),
     }
 
 
 def research_accommodation(state: TravelState) -> dict:
-    """Delegate to the Accommodation Agent. Its budget depends on the transport chosen."""
+    """Delegate to the Accommodation Agent. Its budget depends on the transport chosen.
+
+    A same-day trip needs nowhere to stay - check_in would equal check_out, which
+    every hotel search tool correctly refuses as zero nights. Skipping the search
+    is not a degraded result, it is the right answer: there is nothing to book.
+    """
+    if state.get("duration_days", 1) <= 1:
+        return {"hotel_options": [], "selected_hotel": {}}
+
     brief = travel_manager.build_accommodation_brief(state)
     result = accommodation_agent(brief, get_tools("accommodation_agent"))
 
@@ -136,7 +165,7 @@ def research_accommodation(state: TravelState) -> dict:
             if result.recommended
             else {}
         ),
-        "degraded": state.get("degraded", []) + result.failures,
+        "degraded": _refresh_degraded(state, ("hotel search unavailable",), result.failures),
     }
 
 
@@ -151,7 +180,15 @@ def research_experience(state: TravelState) -> dict:
         "routes": [r.model_dump() for r in result.routes],
         "suggested_schedule": result.suggested_schedule,
         "experience_notes": result.notes,
-        "degraded": state.get("degraded", []) + result.failures,
+        "degraded": _refresh_degraded(
+            state,
+            (
+                "places search unavailable for",
+                "weather unavailable for",
+                "route calculation unavailable",
+            ),
+            result.failures,
+        ),
     }
 
 
@@ -291,13 +328,11 @@ def compute_costs(state: TravelState) -> dict:
     hotel = state.get("selected_hotel") or {}
     days = state.get("itinerary", {}).get("days", [])
 
-    # Providers return a total for the whole party; fall back to per-person maths.
-    one_way = transport.get("total_price") or transport.get("price_per_person", 0) * travelers
     nights = max(state.get("duration_days", 1) - 1, 0)
     stay = hotel.get("total_price") or hotel.get("price_per_night", 0) * nights
 
     breakdown = {
-        "transport": float(one_way) * 2,  # return journey
+        "transport": round_trip_transport_cost(transport, travelers),
         "hotel": float(stay),
         "activity": float(sum(d.get("activity_cost", 0) for d in days)),
         "local_transport": float(sum(d.get("local_transport_cost", 0) for d in days)),
@@ -412,17 +447,35 @@ def apply_feedback(state: TravelState) -> dict:
         "requires_full_research": False,
     }
 
-    if intent.new_budget:
-        updates["budget"] = intent.new_budget
+    # The same bounds check_requirements applies to the initial request, applied
+    # again here. Without this, a modification could set the traveller count or
+    # budget to something no tool will accept, and the traveller would see a
+    # confusing cascade of "no transport found" and "budget exceeded by
+    # Rs 900,000" instead of one clear reason why the change was not made.
+    if intent.new_budget is not None:
+        if intent.new_budget > 0:
+            updates["budget"] = intent.new_budget
+        else:
+            degraded.append(
+                f"could not change the budget to Rs {intent.new_budget:,.0f}: "
+                "a budget must be a positive amount"
+            )
 
     if intent.new_travelers and intent.new_travelers != state.get("travelers"):
-        # Fares are quoted per traveller and hotel rooms are booked per head, so
-        # a headcount change makes the current transport and hotel choices
-        # stale. Only travelers forces a full re-run: the money levers below
-        # pick a different *already fetched* option directly, and re-running
-        # research would just reselect the same one and undo that choice.
-        updates["travelers"] = intent.new_travelers
-        updates["requires_full_research"] = True
+        if 1 <= intent.new_travelers <= settings.max_travelers:
+            # Fares are quoted per traveller and hotel rooms are booked per
+            # head, so a headcount change makes the current transport and
+            # hotel choices stale. Only travelers forces a full re-run: the
+            # money levers below pick a different *already fetched* option
+            # directly, and re-running research would just reselect the same
+            # one and undo that choice.
+            updates["travelers"] = intent.new_travelers
+            updates["requires_full_research"] = True
+        else:
+            degraded.append(
+                f"could not change to {intent.new_travelers} travellers: "
+                f"must be between 1 and {settings.max_travelers}"
+            )
 
     if intent.add_interests:
         merged = list(state.get("interests") or [])

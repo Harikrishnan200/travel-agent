@@ -412,3 +412,135 @@ def test_a_stale_over_budget_message_does_not_survive_a_fix(client):
     assert rescued["final_response"] is None
     assert rescued["awaiting_decision"]["message"] == ""
     assert rescued["awaiting_decision"]["options"] == ["approve", "modify", "reject"]
+
+
+# --- bugs found by systematically hunting for the same "stale state" class --
+
+
+def test_a_recovered_tool_failure_is_no_longer_reported(client):
+    """A search that failed once and later succeeded must not go on looking
+    broken for the rest of the trip - the exact bug reported: "train search
+    unavailable" was still showing up after a later modify that used trains
+    successfully.
+    """
+    from unittest.mock import patch
+
+    from gateway import mcp_router
+
+    working = mcp_router.call_tool
+
+    def trains_down(tool, arguments):
+        if tool == "search_trains":
+            raise mcp_router.MCPUnavailableError("down")
+        return working(tool, arguments)
+
+    with patch.object(mcp_router, "call_tool", trains_down):
+        created = plan(
+            client,
+            "Plan a 5 day trip from Kochi to Delhi for 4 people under Rs 60000",
+        )
+    assert "train search unavailable" in created["degraded"]
+
+    after = client.post(
+        f"/api/v1/trips/{created['trip_id']}/modify",
+        json={"feedback": "reduce to 2 people"},
+    ).json()
+    assert "train search unavailable" not in after["degraded"]
+
+
+def test_a_persistent_tool_failure_is_still_reported(client):
+    """The other half of the fix: clearing a stale notice must not also
+    swallow a real, ongoing problem."""
+    from unittest.mock import patch
+
+    from gateway import mcp_router
+
+    working = mcp_router.call_tool
+
+    def trains_down(tool, arguments):
+        if tool == "search_trains":
+            raise mcp_router.MCPUnavailableError("down")
+        return working(tool, arguments)
+
+    with patch.object(mcp_router, "call_tool", trains_down):
+        created = plan(
+            client,
+            "Plan a 5 day trip from Kochi to Delhi for 4 people under Rs 60000",
+        )
+        assert "train search unavailable" in created["degraded"]
+
+        after = client.post(
+            f"/api/v1/trips/{created['trip_id']}/modify",
+            json={"feedback": "reduce to 2 people"},
+        ).json()
+        assert "train search unavailable" in after["degraded"]
+
+
+def test_a_same_day_trip_needs_no_hotel(client):
+    """A day trip has nowhere to check in to. Used to always fail: the tool
+    correctly refused a zero-night search, and that refusal was reported as
+    "no accommodation was found" instead of "none was needed".
+    """
+    created = plan(client, "Plan a 1 day trip from Kochi to Delhi for 2 people under Rs 60000")
+
+    assert created["status"] == "awaiting_approval"
+    assert created["plan"]["hotel"] in ({}, None)
+    assert created["plan"]["cost_breakdown"]["hotel"] == 0
+    assert "hotel search unavailable" not in created["degraded"]
+
+
+def test_a_traveler_change_beyond_the_limit_is_refused_with_a_clear_reason(client):
+    """Before this fix, the state was corrupted to travelers=500 anyway, and
+    the traveller saw a confusing cascade - "no transport found", "no
+    accommodation found", "budget exceeded by Rs 900,000+" - instead of one
+    clear reason nothing changed.
+    """
+    created = plan(client)
+    after = client.post(
+        f"/api/v1/trips/{created['trip_id']}/modify",
+        json={"feedback": "we are now 500 people"},
+    ).json()
+
+    assert after["plan"]["travelers"] == created["plan"]["travelers"]
+    assert any("must be between 1 and" in note for note in after["degraded"])
+    assert after["status"] == "awaiting_approval"
+
+
+def test_a_negative_budget_is_refused_rather_than_applied(client):
+    """The guard in apply_feedback, tested directly against a crafted intent -
+    natural language rarely spells out a negative number, but an LLM (or a
+    parsing quirk) can still hand one back, and it must not be applied as if
+    it were a real budget cut.
+    """
+    from unittest.mock import patch
+
+    from app.graph import feedback as feedback_module
+    from app.graph.feedback import FeedbackIntent
+    from app.llm.client import LLMUnavailable
+
+    created = plan(client)
+
+    with patch.object(feedback_module, "interpret_with_llm", side_effect=LLMUnavailable("x")):
+        with patch.object(
+            feedback_module,
+            "interpret_with_rules",
+            return_value=FeedbackIntent(new_budget=-5000.0),
+        ):
+            after = client.post(
+                f"/api/v1/trips/{created['trip_id']}/modify",
+                json={"feedback": "irrelevant, the intent above is forced"},
+            ).json()
+
+    assert after["plan"]["budget"] == created["plan"]["budget"]
+    assert any("positive amount" in note for note in after["degraded"])
+
+
+def test_the_rule_based_budget_reader_does_not_understand_a_minus_sign():
+    """Documents a real, minor gap found while testing the guard above: the
+    regex drops the sign, so "-5000" reads as a plain 5000. Not worth fixing
+    for how people actually phrase a budget - nobody sincerely asks for a
+    negative one - but worth knowing next time this code is touched.
+    """
+    from app.graph.feedback import interpret_with_rules
+
+    assert interpret_with_rules("reduce the budget to -5000").new_budget == 5000.0

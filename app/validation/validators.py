@@ -73,7 +73,14 @@ def validate_transport(state: dict) -> list[str]:
 
 
 def validate_hotel(state: dict) -> list[str]:
-    """There is somewhere to stay, booked for the right number of nights."""
+    """There is somewhere to stay, booked for the right number of nights.
+
+    A same-day trip (0 nights) needs no hotel at all, so an empty selection is
+    correct there rather than a validation failure.
+    """
+    if (state.get("duration_days") or 1) <= 1:
+        return []
+
     hotel = state.get("selected_hotel") or {}
     if not hotel:
         return [f"No accommodation was found in {state.get('destination')}."]
