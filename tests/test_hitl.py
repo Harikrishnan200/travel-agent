@@ -389,3 +389,26 @@ def test_reduce_without_a_headcount_is_read_as_a_money_request_not_a_traveler_ch
     intent = interpret_with_rules("reduce the hotel cost please")
     assert intent.new_travelers is None
     assert intent.cheaper_hotel is True
+
+
+def test_a_stale_over_budget_message_does_not_survive_a_fix(client):
+    """The exact reported bug: needs_user_decision leaves final_response set,
+    and a later modify that fixes the budget skips that node entirely on its
+    way back to human_review - so nothing else would ever clear it out.
+    """
+    impossible = plan(
+        client, "Plan a 5 day trip from Kochi to Bangalore for 4 people under Rs 20000"
+    )
+    assert impossible["status"] == "needs_user_decision"
+    assert "budget" in impossible["final_response"].lower()
+
+    rescued = client.post(
+        f"/api/v1/trips/{impossible['trip_id']}/modify",
+        json={"feedback": "reduce the number of people to 2"},
+    ).json()
+
+    assert rescued["status"] == "awaiting_approval"
+    assert rescued["validation_errors"] == []
+    assert rescued["final_response"] is None
+    assert rescued["awaiting_decision"]["message"] == ""
+    assert rescued["awaiting_decision"]["options"] == ["approve", "modify", "reject"]

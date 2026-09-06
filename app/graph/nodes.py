@@ -313,7 +313,15 @@ def validate_plan(state: TravelState) -> dict:
     # The status is set here rather than in human_review, because that node
     # interrupts before it can return anything.
     status = "planning" if errors else "awaiting_approval"
-    return {**costs, "validation_errors": errors, "status": status}
+
+    updates = {**costs, "validation_errors": errors, "status": status}
+    if not errors:
+        # A plan that is valid now must not still be carrying the "budget
+        # exceeded" message from an earlier needs_user_decision - a modify
+        # that fixes the problem skips that node entirely on its way back to
+        # human_review, so nothing else would ever clear this out.
+        updates["final_response"] = None
+    return updates
 
 
 def replan(state: TravelState) -> dict:
