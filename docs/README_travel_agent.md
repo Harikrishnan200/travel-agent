@@ -734,3 +734,317 @@ The API key above is only the repository's development default; use the key conf
 ---
 
 **One-sentence takeaway:** **FastAPI receives the trip request; LangGraph coordinates the planning stages; specialist agents use injected tool wrappers; your custom REST-to-MCP gateway controls and routes MCP tool calls; Python validates the itinerary; and LangGraph HITL pauses for a human to approve, modify, or reject the *plan*—without making a booking.**
+
+---
+
+# Appendix A — Complete File and Folder Walkthrough
+
+This appendix covers the meaningful source, configuration, documentation, evaluation, and test files found in the uploaded `travel-agent.zip`. It intentionally ignores generated cache files, `__pycache__`, and machine-specific artifacts.
+
+## A1. How the folders work together
+
+```text
+User / frontend / HTTP client
+    |
+    v
+app/main.py -> app/api/trips.py
+                    |
+                    v
+            app/graph/graph.py
+                    |
+                    v
+            app/graph/nodes.py <--> app/graph/state.py
+                    |
+                    +--> app/agents/* (manager + transport/hotel/experience)
+                    |       |
+                    |       v
+                    |   app/tools.py -> app/mcp_client.py
+                    |                       |
+                    |                       v
+                    |                  gateway/service.py
+                    |                       ^
+                    |                  gateway/server.py (HTTP mode)
+                    |                       |
+                    |          gateway/policy.py + cache + metrics
+                    |                       |
+                    |                       v
+                    |                 gateway/mcp_router.py
+                    |                       |
+                    |                       v
+                    |                mcp_servers/*/server.py
+                    |                       |
+                    |                provider.py / mock_data.py
+                    |
+                    +--> app/graph/extraction.py + app/llm/client.py
+                    +--> app/validation/* + app/guardrails/*
+                    +--> app/db/* (trips/events + checkpoints)
+```
+
+**Important:** The gateway offers a REST entry point to application clients; in split-process mode its downstream calls use MCP. In-process mode calls the gateway service without HTTP. **Approving a plan does not purchase tickets or reserve rooms.**
+
+## A2. Root files
+
+| File | What it is / why it exists |
+|---|---|
+| `README.md` | Project introduction, architecture, usage and setup information. |
+| `BEGINNER_GUIDE.md` | Existing walkthrough for developers learning this system. |
+| `FUNCTION_REFERENCE.md` | Reference for functions and their responsibilities. |
+| `PROJECT_PLAN.md` | Design phases and planned scope; future phases are not necessarily implemented. |
+| `Dockerfile` | Image build instructions for the Python application. |
+| `docker-compose.yml` | Defines multiple services and infrastructure to run together. |
+| `pyproject.toml` | Project/tool configuration. |
+| `requirements.txt` | Main Python dependencies. |
+| `requirements-dev.txt` | Development/test dependencies. |
+| `.env.example` | Example environment variables; copy/adapt for local configuration. |
+| `.gitignore` | Prevents local/generated/sensitive files being committed. |
+| `.dockerignore` | Keeps unnecessary files out of Docker build context. |
+| `.github/workflows/ci.yml` | CI checks executed through GitHub Actions. |
+
+**Never commit your real `.env` containing secrets.** The ZIP contains an `.env` file; keep local credentials private.
+
+## A3. `app/` — main FastAPI application
+
+| File | Responsibility / when called |
+|---|---|
+| `app/__init__.py` | Marks `app` as a Python package. |
+| `app/main.py` | Creates the FastAPI app, registers routes and application-level setup. Start reading here for incoming HTTP requests. |
+| `app/config.py` | Centralized settings loaded from the environment: gateway URLs, credentials, providers, databases and feature flags. |
+| `app/cache.py` | Caching helpers used by the system; distinct from deciding which transport to choose. |
+| `app/tools.py` | `get_tools(agent)` creates the allowed name-to-callable dictionary, using closures that forward tool calls. **This is where agent tool dependency injection happens.** |
+| `app/mcp_client.py` | Client-facing tool invocation: in-process gateway service or HTTP `/call`, according to configuration. |
+| `app/logging_setup.py` | Sets up structured/logging behavior. |
+| `app/metrics.py` | Defines/exposes measurements such as requests, errors, tool activity and latencies. |
+
+### `app/api/` — user-facing API
+
+| File | Responsibility |
+|---|---|
+| `app/api/__init__.py` | Package marker. |
+| `app/api/trips.py` | Defines trip endpoints; creates a trip and invokes LangGraph; handles approve/modify/reject by resuming the paused workflow; retrieves trip information. |
+
+### `app/graph/` — LangGraph execution engine
+
+| File | Responsibility |
+|---|---|
+| `app/graph/__init__.py` | Package marker. |
+| `app/graph/state.py` | `TravelState` and initial state fields shared among nodes. Think of it as the workflow's notebook. |
+| `app/graph/graph.py` | Defines nodes, `START`/`END` edges, conditional routes, loops, and graph compilation/checkpointer. It specifies **which node executes next**. |
+| `app/graph/nodes.py` | Implementation of work at each node: request parsing, research, itinerary creation, validation, `human_review`, feedback, and finalization. It specifies **what happens in each node**. |
+| `app/graph/extraction.py` | Extracts structured trip requirements from user text, with LLM assistance/fallback behavior. |
+| `app/graph/prompts.py` | Prompt templates used for model-based understanding or response generation. |
+| `app/graph/feedback.py` | Interprets modification feedback so requested changes can be applied to planning state. |
+
+**Graph vs nodes:** `graph.py` is the map; `nodes.py` contains the work done at each stop. `state.py` is the data traveling between stops.
+
+### `app/agents/` — narrow business responsibilities
+
+| File | Responsibility |
+|---|---|
+| `app/agents/__init__.py` | Package marker. |
+| `app/agents/travel_manager.py` | Builds scoped briefs for the specialist agents and summarizes results for the user. |
+| `app/agents/transport_agent.py` | Searches flights/trains/buses through injected tools; deterministically chooses an option and returns backups and failure details. |
+| `app/agents/accommodation_agent.py` | Finds and selects accommodation according to constraints and research results. |
+| `app/agents/experience_agent.py` | Researches attractions, routes, weather and experiences relevant to the itinerary. |
+| `app/agents/schemas.py` | Pydantic shapes for agent inputs/outputs, such as `TransportOption` and `TransportResult`. |
+
+**These agents are not separate network microservices.** They are specialist Python modules called by graph nodes. They receive tools rather than owning MCP transports.
+
+### `app/llm/` — large-language-model access
+
+| File | Responsibility |
+|---|---|
+| `app/llm/__init__.py` | Package marker. |
+| `app/llm/client.py` | Provider/model calls, fallback behavior and related response handling. The model helps interpret or explain content, but the transport ranking, budget arithmetic and permission checks are deterministic code. |
+
+### `app/validation/` and `app/guardrails/`
+
+| File | Responsibility |
+|---|---|
+| `app/validation/__init__.py` | Package marker. |
+| `app/validation/validators.py` | Checks proposed plans against constraints (budget, timings and structural rules). |
+| `app/validation/replan.py` | Attempts to adjust plans when validation reports a problem. |
+| `app/itinerary_rules.py` | Shared itinerary capacity/scheduling rules used for deterministic consistency. |
+| `app/guardrails/__init__.py` | Package marker. |
+| `app/guardrails/input_guard.py` | Checks user input before or during planning. |
+| `app/guardrails/output_guard.py` | Checks the completed response before presenting it. |
+
+**Validation vs guardrails:** Validation asks whether a plan satisfies travel constraints; guardrails check whether inputs/outputs comply with application safety/content requirements. There can be overlap, but the responsibilities are conceptually different.
+
+### `app/db/` — application persistence
+
+| File | Responsibility |
+|---|---|
+| `app/db/__init__.py` | Package marker. |
+| `app/db/database.py` | Database connections/session management and application data-access helpers. |
+| `app/db/models.py` | Database table/model definitions for application-level trip data. |
+| `app/db/checkpointer.py` | Provides LangGraph checkpoint persistence so paused workflows can be resumed using the same `thread_id`. |
+
+**Remember the difference:** Trip records are application data; checkpoints preserve a graph's execution state, including a paused HITL step.
+
+## A4. `gateway/` — your custom REST-to-MCP gateway
+
+| File | Responsibility |
+|---|---|
+| `gateway/__init__.py` | Package marker. |
+| `gateway/server.py` | HTTP gateway endpoints, request parsing, API-key checks, agent identification, and responses. Only needed as an HTTP boundary in split-process mode. |
+| `gateway/policy.py` | `AGENT_TOOL_ACCESS`, read vs action tool definitions, and permission/approval predicates. |
+| `gateway/service.py` | Central execution pipeline: authorize request, check action approval, cache/limit, execute tool, record metrics/logs and return result. |
+| `gateway/mcp_router.py` | Maps tool names to transport/hotel/places/weather MCP servers; performs the downstream call. |
+
+**How to trace one call:** `get_tools("transport_agent")` → injected callable → `app/mcp_client.py` → gateway service (via HTTP server or in-process) → `gateway/mcp_router.py` → MCP server → result returns to agent.
+
+The gateway's booking action names represent intended policy protection; **the project does not execute real bookings**.
+
+## A5. `mcp_servers/` — actual tool implementations
+
+| File | Responsibility |
+|---|---|
+| `mcp_servers/__init__.py` | Package marker. |
+| `mcp_servers/cities.py` | Shared city/location information used by tools. |
+| `mcp_servers/validation.py` | Shared input validation for MCP tool arguments. |
+| `mcp_servers/transport/__init__.py` | Package marker. |
+| `mcp_servers/transport/server.py` | Exposes transport-search tools to MCP clients. |
+| `mcp_servers/transport/provider.py` | Fetches/organizes transport information behind server tools. |
+| `mcp_servers/transport/mock_data.py` | Predictable example transport results for development/testing. |
+| `mcp_servers/hotels/__init__.py` | Package marker. |
+| `mcp_servers/hotels/server.py` | Exposes hotel-search MCP tool(s). |
+| `mcp_servers/hotels/provider.py` | Hotel data/provider logic. |
+| `mcp_servers/hotels/mock_data.py` | Example hotel data for tests/local use. |
+| `mcp_servers/places/__init__.py` | Package marker. |
+| `mcp_servers/places/server.py` | Exposes place search and routing-related MCP tools. |
+| `mcp_servers/places/provider.py` | Data/provider logic for places and routes. |
+| `mcp_servers/places/mock_data.py` | Example place/route data. |
+| `mcp_servers/weather/__init__.py` | Package marker. |
+| `mcp_servers/weather/server.py` | Exposes weather MCP tool(s). |
+| `mcp_servers/weather/provider.py` | Weather-provider logic. |
+| `mcp_servers/weather/mock_data.py` | Example weather information. |
+
+**Server / provider / mock data pattern:** `server.py` is the tool's MCP interface; `provider.py` contains source-specific functionality; `mock_data.py` supplies deterministic data. Mock results must not be confused with verified, live prices or inventory.
+
+## A6. Other folders
+
+### `scripts/`
+
+| File | Responsibility |
+|---|---|
+| `scripts/run_services.py` | Helper to start/manage project services in development. |
+
+### `evaluation/`
+
+| File | Responsibility |
+|---|---|
+| `evaluation/dataset.json` | Example evaluation scenarios and expectations. |
+| `evaluation/evaluate.py` | Runs evaluations to check outputs/behavior against test cases. |
+
+### `docs/`
+
+| File | Responsibility |
+|---|---|
+| `docs/interview-guide.md` | Interview-oriented architecture explanations and technical questions. |
+
+### `tests/`
+
+`tests/__init__.py` is a package marker; `tests/conftest.py` defines shared pytest setup/fixtures.
+
+| Test file | Area it covers |
+|---|---|
+| `test_api.py` | Trip HTTP endpoints and responses. |
+| `test_config.py` | Configuration behavior. |
+| `test_dependencies.py` | Dependencies and integration assumptions. |
+| `test_extraction.py` | Text-to-structured-trip extraction. |
+| `test_failure_handling.py` | Degraded/error paths. |
+| `test_gateway.py` | Core gateway behavior. |
+| `test_graph.py` | LangGraph structure and workflow paths. |
+| `test_guardrails.py` | Input/output guardrail behavior. |
+| `test_hitl.py` | Pause/approve/modify/reject/resume behavior. |
+| `test_hotel_provider.py` | Hotel provider integration behavior. |
+| `test_hotels.py` | Hotel selection and search logic. |
+| `test_llm_fallback.py` | Fallback when model/provider calls fail. |
+| `test_mcp_servers.py` | MCP server interfaces. |
+| `test_observability.py` | Metrics and logging. |
+| `test_optional_providers.py` | Optional provider handling. |
+| `test_persistence.py` | Database/checkpoint persistence. |
+| `test_places.py` | Places/experience-related behavior. |
+| `test_providers.py` | Provider behavior. |
+| `test_replan.py` | Re-planning algorithm. |
+| `test_tool_access.py` | Agent tool authorization policy. |
+| `test_transport.py` | Transport agent decisions. |
+| `test_transports.py` | Transport search/provider behavior. |
+| `test_validation.py` | Trip validation rules. |
+
+The table describes each test module's intended area, **not a guarantee that every edge case is tested**. Read the test functions to learn exactly which claims are verified.
+
+## A7. Four useful request traces
+
+**A new trip**
+
+```text
+POST /api/v1/trips
+  -> app/api/trips.py
+  -> app/graph/state.py: new_state
+  -> app/graph/graph.py: graph.invoke (START -> parse_request)
+  -> app/graph/nodes.py: validation, agent research, itinerary, plan validation
+  -> human_review: interrupt
+  -> API returns the pending human decision
+```
+
+**A transport tool call**
+
+```text
+app/graph/nodes.py
+  -> travel_manager.build_transport_brief(...)
+  -> transport_agent(brief, get_tools("transport_agent"))
+  -> app/agents/transport_agent.py: tools["search_trains"](...)
+  -> app/tools.py: captured wrapper
+  -> app/mcp_client.py: call_tool(...)
+  -> gateway/service.py (possibly through gateway/server.py HTTP /call)
+  -> gateway/mcp_router.py
+  -> mcp_servers/transport/server.py
+  -> return transport options, choose best, return TransportResult
+```
+
+**An approved trip**
+
+```text
+POST /api/v1/trips/{trip_id}/approve
+  -> app/api/trips.py: _resume
+  -> graph.invoke(Command(resume={"action":"approve"}), same thread_id)
+  -> human_review receives decision
+  -> finalize -> output_guard -> END
+  -> finalized itinerary; NO ticket/hotel booking
+```
+
+**A modification**
+
+```text
+POST /api/v1/trips/{trip_id}/modify
+  -> _resume with {action: modify, feedback: ...}
+  -> apply_feedback
+  -> rerun affected research/planning and validation
+  -> human_review interrupt again
+```
+
+## A8. Recommended reading order, one day at a time
+
+1. **HTTP foundation:** `app/main.py`, `app/api/trips.py`, request/response schemas.
+2. **Graph foundation:** `app/graph/state.py`, `app/graph/graph.py`, then `app/graph/nodes.py`.
+3. **Specialists:** `app/agents/travel_manager.py`, `schemas.py`, and each specialist agent.
+4. **Gateway connection:** `app/tools.py`, `app/mcp_client.py`, `gateway/policy.py`, `service.py`, `server.py`, `mcp_router.py`.
+5. **MCP tools:** One `mcp_servers/transport/server.py` call down through `provider.py` and `mock_data.py`.
+6. **Reasoning, validation, safety:** `app/graph/extraction.py`, `feedback.py`, `app/llm/client.py`, `app/validation/`, `app/guardrails/`.
+7. **Resume and persistence:** `app/db/checkpointer.py`, `app/db/database.py`, `app/db/models.py`, `tests/test_hitl.py`.
+8. **Production concerns:** `app/config.py`, `app/cache.py`, `app/metrics.py`, logging, Docker Compose, CI, evaluation and tests.
+
+### Interview mental model
+
+- **FastAPI** is the entrance.
+- **LangGraph** is the workflow conductor.
+- **Travel Manager** prepares each specialist's assignment.
+- **Specialist agents** choose/research within their domain.
+- **`app/tools.py`** is the adapter that hands callable tools to agents.
+- **MCP client + custom gateway** control transport and tool execution.
+- **MCP servers** provide the actual research functions.
+- **Validators** enforce travel rules.
+- **HITL** pauses the plan for review, then resumes it.
+- **PostgreSQL/checkpointer** keeps data and pause/resume state.
+- **Observability/tests** make the system auditable and testable.
